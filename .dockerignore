@@ -1,0 +1,29 @@
+# Root directory
+.git/
+.gitignore
+.dockerignore
+Dockerfile
+README.md
+
+# Virtual environment
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+
+# Environment variables
+.env
+.env.example
+
+# Logs
+*.log
+audit.log
+
+# IDEs
+.vscode/
+.idea/
+
+# OS files
+desktop.ini
+.DS_Store

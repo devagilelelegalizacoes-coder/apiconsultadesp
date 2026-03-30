@@ -1,0 +1,67 @@
+from app.scrapers.base_scraper import BaseScraper
+from app.infrastructure.captcha_solver import solver # Se precisar de Captcha
+from typing import Dict, Any
+import base64
+
+class TemplateScraper(BaseScraper):
+    """
+    Template para criação de novos scrapers. 
+    Copie este arquivo e renomeie conforme a fonte (ex: sefaz_pr.py).
+    """
+
+    async def get_vehicle_data(self, renavam: str, placa: str = None) -> Dict[str, Any]:
+        """
+        Orquestra a consulta ao portal.
+        """
+        # 1. Inicia o navegador com Stealth e Proxy (se configurado no .env)
+        page = await self.init_browser()
+        
+        try:
+            print(f"[*] [Template] Iniciando consulta para: {renavam}")
+            
+            # 2. Navegação
+            await page.goto("URL_DO_PORTAL_AQUI", wait_until="networkidle")
+            
+            # Simula interação humana (opcional)
+            await self.simulate_interaction(page)
+            
+            # 3. Preenchimento de Campos
+            await page.fill("#campo-renavam", renavam)
+            
+            # 4. Exemplo de Captcha de Imagem (opcional)
+            # captcha_element = await page.wait_for_selector("#id-do-captcha")
+            # captcha_bytes = await captcha_element.screenshot()
+            # captcha_b64 = base64.b64encode(captcha_bytes).decode('utf-8')
+            # resp = await solver.solve_image_captcha(captcha_b64)
+            # await page.fill("#input-captcha", resp)
+            
+            # 5. Submissão
+            await page.click(".btn-consultar")
+            
+            # 6. Aguardar Resultados
+            await page.wait_for_selector(".tabela-resultados", timeout=15000)
+            
+            # 7. Extração de Dados
+            # Exemplo de extração de texto
+            nome = await page.locator("#nome-proprietario").inner_text()
+            
+            return {
+                "source": "PortalTemplate",
+                "renavam": renavam,
+                "status": "success",
+                "data": {
+                    "proprietario": nome.strip(),
+                    # Adicione outros campos aqui
+                }
+            }
+
+        except Exception as e:
+            print(f"[!] [Template] Erro: {str(e)}")
+            return {
+                "source": "PortalTemplate", 
+                "status": "error", 
+                "message": str(e)
+            }
+        finally:
+            # 8. Importante: Sempre fechar o navegador no final
+            await self.close()

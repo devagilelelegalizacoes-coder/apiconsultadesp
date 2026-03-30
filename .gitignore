@@ -1,0 +1,28 @@
+# Virtual environment
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+
+# Environment variables (Sensitive)
+.env
+
+# Logs
+*.log
+audit.log
+
+# IDEs
+.vscode/
+.idea/
+.spyderproject
+.settings/
+
+# OS files
+desktop.ini
+.DS_Store
+
+# Static/Temporary files
+tmp/
+*.tmp
+*.bak
