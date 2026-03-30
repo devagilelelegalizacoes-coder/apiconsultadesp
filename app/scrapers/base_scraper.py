@@ -35,7 +35,7 @@ class BaseScraper:
         proxy = self._get_proxy_config()
         
         self.browser = await self.playwright.chromium.launch(
-            headless=False,
+            headless=True,
             proxy=proxy,
             args=[
                 "--disable-blink-features=AutomationControlled",
