@@ -16,6 +16,7 @@ supabase==2.10.0
 
 # --- Scrapers & Automation ---
 playwright==1.49.0
+playwright-stealth==1.0.6
 2captcha-python==1.2.5
 
 # --- Utils ---
