@@ -42,7 +42,9 @@ class BaseScraper:
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
-                "--disable-gpu"
+                "--disable-gpu",
+                "--ozone-platform=headless",
+                "--disable-software-rasterizer"
             ]
         )
         
