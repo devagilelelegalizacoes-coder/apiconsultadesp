@@ -56,6 +56,9 @@ class SefazRJScraper(BaseScraper):
                         await self.close() # Close current browser for clean state
                         continue
                     
+                    if "NÃO ENCONTRADO" in error_msg.upper() or "NÃO EXISTEM" in error_msg.upper():
+                        return {"source": "SEFAZ-RJ", "status": "success", "data": {"detalhes": {}, "debitos_ipva": []}, "message": "Nada consta ou veículo não encontrado"}
+                    
                     return {"source": "SEFAZ-RJ", "status": "error", "message": error_msg}
 
                 # Result extraction

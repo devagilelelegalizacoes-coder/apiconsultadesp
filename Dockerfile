@@ -1,36 +1,38 @@
-# Utilizando imagem oficial do Playwright para Python (Garante drivers e navegadores instalados)
+# Use Microsoft Playwright image as base (contains browsers and dependencies)
 FROM mcr.microsoft.com/playwright/python:v1.49.0-jammy
 
-# Configurações de ambiente
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
 
-# Diretório de trabalho dentro do container
+# Set the working directory
 WORKDIR /app
 
-# Instalação das dependências do sistema necessárias para compilar pacotes Python (se houver)
+# Install system dependencies needed for compiling Python packages
 RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copia apenas o requirements primeiro para aproveitar o cache de camadas do Docker
+# Copy requirements first to leverage Docker cache
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
-# Instala apenas o Chromium do Playwright (focado para performance em Docker)
+# Install Python dependencies
+RUN pip install -r requirements.txt
+
+# Install only Chromium for Playwright (fast and standard for scraping)
 RUN playwright install chromium
 
-# Copia todo o código-fonte do projeto para o container
+# Copy the rest of the application code
 COPY . .
 
-# Expõe a porta que a API irá rodar (mesma definida no run_api.py)
+# Expose the API port
 EXPOSE 8000
 
-# Variáveis de ambiente padrão (Deve ser sobrescrita no Easy Panel/Dashboard)
-# ENV SUPABASE_URL=...
-# ENV SUPABASE_KEY=...
-# ENV CAPTCHA_API_KEY=...
+# Metadata (Optional but useful for Portainer/Dashboard)
+LABEL version="1.2.0" \
+      description="Automated Vehicle Debt Inquiry API"
 
-# Comando para iniciar a API
-# Usamos 0.0.0.0 para que o container possa receber conexões externas no Docker/Easy Panel
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Command to run the application
+# We use --workers 1 since scrapers are heavy and we manage concurrency internally
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

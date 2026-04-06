@@ -1,28 +1,29 @@
-# Virtual environment
-venv/
-.venv/
-env/
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 
-# Environment variables (Sensitive)
+# Environments
 .env
+.venv
+venv/
+ENV/
+env/
 
-# Logs
-*.log
-audit.log
-
-# IDEs
+# IDE files
 .vscode/
 .idea/
-.spyderproject
-.settings/
 
 # OS files
 desktop.ini
-.DS_Store
+Thumbs.db
 
-# Static/Temporary files
-tmp/
-*.tmp
-*.bak
+# Logs and debug
+*.log
+audit.log
+detran_rj_multas_debug_*
+
+# Data
+*.csv
+*.json
+!app/config/*.json

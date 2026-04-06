@@ -48,11 +48,12 @@ class BudgetCoordinator:
                 raise Exception("Renavam not found in DataF5 query.")
 
             # --- STEP 1, 2 & 6: DETRAN Parallel Queries ---
+            # NOTE: We use separate instances to avoid concurrency issues with self.browser.close()
             print(f"[*] [Budget] Starting Step 1, 2 & 6 (DETRAN RJ)...")
             detran_tasks = [
-                detran.get_cadastro_data(placa),
-                detran.get_multas_detalhadas(renavam, cpf_proprietario),
-                detran.get_nada_consta_apreendido_data(placa, chassi, renavam, "cpf" if len(cpf_proprietario) == 11 else "cnpj", cpf_proprietario)
+                DetranRJScraper().get_cadastro_data(placa),
+                DetranRJScraper().get_multas_detalhadas(renavam, cpf_proprietario),
+                DetranRJScraper().get_nada_consta_apreendido_data(placa, chassi, renavam, "cpf" if len(cpf_proprietario) == 11 else "cnpj", cpf_proprietario)
             ]
             
             detran_raw = await asyncio.gather(*detran_tasks, return_exceptions=True)
@@ -80,41 +81,96 @@ class BudgetCoordinator:
                 else:
                     results["step_3_owner_discovery"] = {"status": "error", "message": "Failed to discover new CPF"}
 
-            # --- STEP 4 & 5: Bradesco (GRT & optimized Multas) ---
-            print(f"[*] [Budget] Starting Step 4 & 5 (Bradesco) with CPF: {working_cpf}")
-            bradesco_res = await bradesco.get_vehicle_data(renavam, working_cpf)
+            # --- STEP 4, 5 & 6-Part-2: Bradesco (GRT & Multas) and SEFAZ (IPVA/DívAtiva) ---
+            print(f"[*] [Budget] Starting Step 4, 5 & SEFAZ with CPF: {working_cpf}")
             
-            results["step_4_bradesco_grt"] = bradesco_res.get("grt")
+            # Smart Skip Check from Nada Consta
+            nc_debitos = results["step_6_final_verification"].get("data", {}).get("debitos", {})
+            has_ipva_grt = "SIM" in str(nc_debitos.get("IPVA", "")).upper() or \
+                           "SIM" in str(nc_debitos.get("TAXA_DE_LICENCIAMENTO_ANUAL", "")).upper() or \
+                           "SIM" in str(nc_debitos.get("LICENCIAMENTO_ATRASADO", "")).upper()
+            
+            has_divida = "SIM" in str(nc_debitos.get("DIVIDA_ATIVA", "")).upper() or \
+                         "SIM" in str(nc_debitos.get("DÍVIDA_ATIVA", "")).upper() or has_ipva_grt
+
+            bradesco_tasks = []
+            task_mapping = [] # To keep track of what results go where
+            
+            # Step 4: Bradesco GRT
+            if has_ipva_grt:
+                bradesco_tasks.append(BradescoScraper().get_grt_debts(renavam, working_cpf))
+                task_mapping.append("step_4_bradesco_grt")
+            else:
+                results["step_4_bradesco_grt"] = {"status": "success", "total_somado": "R$ 0,00", "detalhes": [], "message": "Sem débitos (Nada Consta)"}
+
+            # Step 5: Bradesco Multas (Always)
+            bradesco_tasks.append(BradescoScraper().get_fines_data(renavam, working_cpf))
+            task_mapping.append("step_5_bradesco_multas_optimized")
+
+            # Step 6 Part 2: SEFAZ (IPVA/Dívida Ativa)
+            if has_divida:
+                bradesco_tasks.append(SefazRJScraper().get_vehicle_data(renavam))
+                task_mapping.append("step_6_sefaz_ipva")
+            else:
+                results["step_6_sefaz_ipva"] = {"status": "success", "message": "Sem débitos na SEFAZ (Nada Consta)"}
+            
+            # Run all in parallel
+            parallel_results = await asyncio.gather(*bradesco_tasks, return_exceptions=True)
+            
+            for i, task_name in enumerate(task_mapping):
+                res = parallel_results[i]
+                results[task_name] = res if not isinstance(res, Exception) else {"status": "error", "message": str(res)}
+            
+            grm_res = results.get("step_5_bradesco_multas_optimized", {"status": "error"})
             
             # Optimization for Step 5: Merge status from Detran
-            fines_bradesco = bradesco_res.get("grm", {}).get("detalhes", [])
+            fines_bradesco = grm_res.get("detalhes", []) if grm_res.get("status") == "success" else []
             fines_detran = results["step_2_detran_multas"].get("data", []) if results["step_2_detran_multas"].get("status") == "success" else []
             
             for b_fine in fines_bradesco:
                 auto = b_fine.get("auto_infracao")
                 # Try match by Auto
-                match = next((df for df in fines_detran if df.get("Auto") == auto or df.get("Número do Auto") == auto), None)
+                match = next((df for df in fines_detran if df.get("auto_de_infração") == auto or df.get("auto_infracao") == auto), None)
                 if match:
-                    b_fine["is_transitado"] = match.get("is_transitado")
-                    b_fine["is_renainf"] = match.get("is_renainf")
+                    b_fine["is_transitado"] = match.get("is_transitado") or "SIM" if "TRANSITADO" in (match.get("tipo_status") or "").upper() else "NÃO"
+                    b_fine["is_renainf"] = match.get("is_renainf") or "SIM" if "RENAINF" in (match.get("tipo_status") or "").upper() else "NÃO"
                 else:
                     b_fine["is_transitado"] = "N/A"
                     b_fine["is_renainf"] = "N/A"
+
+            # Step 6-Part-2 already handled in parallel above
+
+            # --- STEP 7: CALCULAR RESUMO DE DÉBITOS ---
+            def parse_money(val_str):
+                if not val_str or not isinstance(val_str, str): return 0.0
+                try:
+                    # Clear R$, dots, and change comma to dot
+                    clean = val_str.replace("R$", "").replace(".", "").replace(",", ".").replace(" ", "").strip()
+                    return float(clean)
+                except: return 0.0
             
-            results["step_5_bradesco_multas_optimized"] = bradesco_res.get("grm")
+            total_grt = parse_money(results.get("step_4_bradesco_grt", {}).get("total_somado", "0,00"))
+            total_grm = parse_money(results.get("step_5_bradesco_multas_optimized", {}).get("total_somado", "0,00"))
+            
+            # Sefaz Summation
+            total_sefaz = 0.0
+            sefaz_data = results.get("step_6_sefaz_ipva", {}).get("data", {})
+            if isinstance(sefaz_data, dict):
+                sefaz_ipva_list = sefaz_data.get("debitos_ipva", [])
+                for s_debt in sefaz_ipva_list:
+                    total_sefaz += parse_money(s_debt.get("total_a_pagar", "0,00"))
+            
+            valor_total_debitos = total_grt + total_grm + total_sefaz
+            
+            results["resumo_orcamento"] = {
+                "total_grt_ipva": f"R$ {total_grt:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+                "total_multas": f"R$ {total_grm:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+                "total_sefaz_divida": f"R$ {total_sefaz:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+                "valor_total_debitos": f"R$ {valor_total_debitos:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+                "data_atualizacao": results.get("step_6_final_verification", {}).get("data", {}).get("data_consulta")
+            }
 
-            # --- STEP 6 (Part 2): Dívida Ativa in SEFAZ ---
-            tiene_divida = False
-            nc_data = results["step_6_final_verification"].get("data", {})
-            if "SIM" in nc_data.get("debitos", {}).get("DIVIDA_ATIVA", "").upper():
-                tiene_divida = True
-                
-            if tiene_divida:
-                print(f"[*] [Budget] Dívida Ativa confirmed. Querying SEFAZ for detailed IPVA/DivAtiva...")
-                sefaz_ipva_res = await sefaz_ipva.get_vehicle_data(renavam)
-                results["step_6_sefaz_divida_ativa"] = sefaz_ipva_res
-
-            # --- STEP 7: Final persistence ---
+            # --- STEP 8: Final persistence ---
             cache_key = f"budget:{placa}"
             await database.set(cache_key, results, expire=86400) # Save for 24h
             

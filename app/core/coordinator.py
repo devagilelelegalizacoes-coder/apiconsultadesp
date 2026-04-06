@@ -28,18 +28,20 @@ class QueryCoordinator:
         if placa:
             print(f"[*] Starting parallel queries for Renavam {renavam} with Placa {placa}...")
             results = await asyncio.gather(
-                detran.get_vehicle_data(renavam, cpf, placa),
-                sefaz.get_vehicle_data(renavam),
-                bradesco.get_vehicle_data(renavam, cpf),
-                dataf5.get_vehicle_data(placa),
+                DetranRJScraper().get_vehicle_data(renavam, cpf, placa),
+                SefazRJScraper().get_vehicle_data(renavam),
+                BradescoScraper().get_grt_debts(renavam, cpf),
+                BradescoScraper().get_fines_data(renavam, cpf),
+                DataF5Scraper().get_vehicle_data(placa),
                 return_exceptions=True
             )
         else:
             print(f"[*] Placa not provided. Running Bradesco/Sefaz first to discover Placa...")
             # If no placa, run Bradesco and Sefaz first to try and get it
             results_init = await asyncio.gather(
-                sefaz.get_vehicle_data(renavam),
-                bradesco.get_vehicle_data(renavam, cpf),
+                SefazRJScraper().get_vehicle_data(renavam),
+                BradescoScraper().get_grt_debts(renavam, cpf),
+                BradescoScraper().get_fines_data(renavam, cpf),
                 return_exceptions=True
             )
             
@@ -60,12 +62,12 @@ class QueryCoordinator:
             # Run DataF5 with discovered placa if available
             dataf5_res = await dataf5.get_vehicle_data(extracted_placa) if extracted_placa else {"source": "DataF5", "status": "error", "message": "Placa not discovered"}
             
-            # Combine all results (maintain order: Detran, Sefaz, Bradesco, DataF5)
-            results = [detran_res, results_init[0], results_init[1], dataf5_res]
+            # Combine all results (maintain order: Detran, Sefaz, Bradesco-GRT, Bradesco-Multas, DataF5)
+            results = [detran_res, results_init[0], results_init[1], results_init[2], dataf5_res]
 
         # Process and handle exceptions
         processed_results = []
-        sources = ["DETRAN-RJ", "SEFAZ-RJ", "Bradesco", "DataF5"]
+        sources = ["DETRAN-RJ", "SEFAZ-RJ", "Bradesco-GRT", "Bradesco-Multas", "DataF5"]
         for i, res in enumerate(results):
             if isinstance(res, Exception):
                 processed_results.append({"source": sources[i], "status": "error", "message": str(res)})

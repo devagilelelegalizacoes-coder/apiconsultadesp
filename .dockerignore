@@ -1,29 +1,30 @@
-# Root directory
-.git/
-.gitignore
-.dockerignore
-Dockerfile
-README.md
-
-# Virtual environment
-venv/
-.venv/
-env/
+# Build artifacts
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
-# Environment variables
+# Environments and Secrets
 .env
-.env.example
+.venv
+venv/
+ENV/
+env/
 
-# Logs
-*.log
-audit.log
+# Version Control
+.git
+.gitignore
 
-# IDEs
+# IDE files
 .vscode/
 .idea/
 
-# OS files
+# Local files
+*.log
+audit.log
+ARCHITECTURE_GUIDE.md
+IMPLEMENTATION_GUIDE.md
+test_detran.py
+tests/
+consultas .py
 desktop.ini
-.DS_Store

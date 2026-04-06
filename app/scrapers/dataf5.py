@@ -62,10 +62,24 @@ class DataF5Scraper(BaseScraper):
             except:
                 await page.get_by_text("Consultar").first.click()
 
-            # Wait for Result Modal
+            # Wait for Result Modal or error
             print("[*] [DataF5] Waiting for results...")
-            # Use specifically the visible modal ('show' class) to avoid conflicts with hidden ones
-            await page.wait_for_selector("#placaDataModal.show .modal-body", timeout=20000)
+            try:
+                await page.wait_for_selector("#placaDataModal.show .modal-body, .toast-message, .alert-danger", timeout=20000)
+                
+                # Check for "não encontrada"
+                body_text = await page.locator("body").inner_text()
+                if "NÃO ENCONTRADA" in body_text.upper() or "NÃO LOCALIZADA" in body_text.upper():
+                    print("[-] [DataF5] Plate not found.")
+                    return {"source": "DataF5", "placa": placa, "status": "success", "data": {}, "message": "Placa não encontrada no sistema."}
+                
+                await page.wait_for_selector("#placaDataModal.show .modal-body", timeout=5000)
+            except:
+                # One last check for plate not found
+                body_text = await page.locator("body").inner_text()
+                if "NÃO ENCONTRADA" in body_text.upper():
+                    return {"source": "DataF5", "placa": placa, "status": "success", "data": {}, "message": "Placa não encontrada no sistema."}
+                raise Exception("Timeout waiting for results or identifying error.")
             
             # Extract Data
             print("[*] [DataF5] Extracting data from modal...")
@@ -130,6 +144,16 @@ class DataF5Scraper(BaseScraper):
                      data["Ano Fabricação"] = parts[0].strip()
                      data["Ano Modelo"] = parts[1].strip()
             
+            # Normalize Renavam (11 digits, zero padded)
+            if "Renavam" in data and data["Renavam"]:
+                ren = "".join(filter(str.isdigit, str(data["Renavam"])))
+                data["Renavam"] = ren.zfill(11)
+            
+            # Normalize Chassi (Strict 17 chars, alphanumeric only)
+            if "Chassi" in data and data["Chassi"]:
+                cha = "".join(filter(str.isalnum, str(data["Chassi"]))).upper()
+                data["Chassi"] = cha[:17]
+
             print(f"[+] [DataF5] Extraction complete for {placa}. {len(data)} fields found.")
             return {
                 "source": "DataF5",

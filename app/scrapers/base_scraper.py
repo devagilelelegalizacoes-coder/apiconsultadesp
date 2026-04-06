@@ -68,12 +68,17 @@ class BaseScraper:
         await self.human_delay(300, 800)
 
     async def close(self):
-        browser = self.browser
-        if browser:
-            await browser.close()
+        """Closes browser and stops Playwright correctly."""
+        try:
+            if self.browser:
+                print("[*] [BaseScraper] Closing browser...")
+                await self.browser.close()
+                self.browser = None
+                
+            if self.playwright:
+                await self.playwright.stop()
+                self.playwright = None
+        except Exception as e:
+            print(f"[!] [BaseScraper] Error during closure: {e}")
             self.browser = None
-            
-        pw = self.playwright
-        if pw:
-            await pw.stop()
             self.playwright = None

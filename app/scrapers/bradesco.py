@@ -3,6 +3,7 @@ import re
 from typing import Dict, Any, List
 from playwright.async_api import Page
 from app.scrapers.base_scraper import BaseScraper
+import time 
 
 class BradescoScraper(BaseScraper):
     """
@@ -15,22 +16,11 @@ class BradescoScraper(BaseScraper):
 
     async def get_vehicle_data(self, renavam: str, cpf_cnpj: str) -> Dict[str, Any]:
         """
-        Consulta consolidada de Débitos (GRT) e Multas (GRM).
+        Consulta de Débitos (GRT). 
+        Nota: Multas (GRM) foram separadas conforme solicitado.
         """
-        print(f"[*] [Bradesco] Iniciando consulta consolidada para Renavam: {renavam}")
-        results = {"source": "Bradesco", "renavam": renavam, "status": "success"}
-        
-        # 1. Consulta IPVA/GRT (Débitos Anuais)
-        print("[*] [Bradesco] Consultando Taxas GRT (IPVA/Licenciamento)...")
-        grt_data = await self.get_grt_debts(renavam, cpf_cnpj)
-        results["grt"] = grt_data
-        
-        # 2. Consulta Multas GRM
-        print("[*] [Bradesco] Consultando Multas GRM...")
-        grm_data = await self.get_fines_data(renavam, cpf_cnpj)
-        results["grm"] = grm_data
-        
-        return results
+        print(f"[*] [Bradesco] Iniciando consulta GRT para Renavam: {renavam}")
+        return await self.get_grt_debts(renavam, cpf_cnpj)
 
     async def get_grt_debts(self, renavam: str, cpf_cnpj: str) -> Dict[str, Any]:
         """Consulta débitos de IPVA/GRT (Licenciamento Anual)."""
@@ -54,6 +44,8 @@ class BradescoScraper(BaseScraper):
             except Exception:
                 if "RENAVAM" not in (await target.locator("body").inner_text()):
                     error_msg = await target.locator(".erro_msg").inner_text() if await target.locator(".erro_msg").count() > 0 else "Dados não encontrados."
+                    if "NÃO ENCONTRADO" in error_msg.upper() or "NÃO EXISTEM" in error_msg.upper() or "DADOS NÃO ENCONTRADOS" in error_msg.upper():
+                        return {"status": "success", "total_somado": "R$ 0,00", "detalhes": [], "message": "Nada consta"}
                     return {"status": "error", "message": error_msg}
 
             radios = await target.get_by_title("Marque para selecionar o", exact=False).all()
@@ -69,8 +61,12 @@ class BradescoScraper(BaseScraper):
             for i in range(total_exercicios):
                 current_radios = await target.get_by_title("Marque para selecionar o", exact=False).all()
                 if i < len(current_radios):
-                    await current_radios[i].check()
-                    await page.wait_for_load_state("networkidle")
+                    # Using click instead of check as it triggers navigation/Ajax
+                    await current_radios[i].click()
+                    await self.human_delay(2000, 3000) # Give it time for Ajax/Nav
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=10000)
+                    except: pass
                     
                     container = target.locator("form[name='debitoVeiculoRJForm']")
                     if await container.count() == 0:
@@ -126,6 +122,7 @@ class BradescoScraper(BaseScraper):
             await target.locator("input[name='grm.idSeqFuncao'][value='3']").check()
             
             await target.get_by_title("Continuar").click()
+            time.sleep(3)
             await page.wait_for_load_state("networkidle")
 
             # Verifica se há tabela de multas
