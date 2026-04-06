@@ -19,5 +19,4 @@ playwright==1.49.0
 2captcha-python==1.2.5
 
 # --- Utils ---
-asyncio==3.10.1
 pytz==2024.1
