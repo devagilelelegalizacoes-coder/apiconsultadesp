@@ -6,6 +6,9 @@ class UserManager:
     @staticmethod
     async def get_user(username: str) -> Optional[Dict]:
         """Fetch user from Supabase 'users' table."""
+        if not db.client:
+            print("[!] Supabase client not initialized in UserManager.")
+            return None
         try:
             # We assume a 'users' table exists with username and hashed_password columns
             query = db.client.table("users").select("*").eq("username", username).limit(1).execute()
@@ -19,6 +22,9 @@ class UserManager:
     @staticmethod
     async def create_user(username: str, password: str, role: str = "user"):
         """Create a new user in Supabase with hashed password."""
+        if not db.client:
+            print("[!] Supabase client not initialized in UserManager.")
+            return None
         hashed_password = get_password_hash(password)
         data = {
             "username": username,

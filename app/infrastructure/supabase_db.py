@@ -12,15 +12,23 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 class SupabaseDB:
     def __init__(self):
         self.client: Optional[Client] = None
+        self._init_client()
+
+    def _init_client(self):
+        """Synchronously initializes the Supabase client if credentials are available."""
+        try:
+            if SUPABASE_URL and SUPABASE_KEY:
+                self.client = create_client(SUPABASE_URL, SUPABASE_KEY)
+                print("[*] [Supabase] Client initialized successfully.")
+        except Exception as e:
+            print(f"[*] [Supabase] Initial connection error: {e}")
+            self.client = None
 
     async def connect(self):
-        """Initializes the Supabase client."""
-        try:
-            if not self.client and SUPABASE_URL and SUPABASE_KEY:
-                self.client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        except Exception as e:
-            print(f"Supabase Connection Error: {e}")
-            self.client = None
+        """Ensures the Supabase client is initialized."""
+        if not self.client:
+            self._init_client()
+        return self.client
 
     async def get(self, key: str) -> Optional[Any]:
         """Retrieves a cached value from the 'vehicle_cache' table."""
