@@ -273,6 +273,16 @@ async def get_job_status(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao consultar status: {str(e)}")
 
+@app.get("/")
+async def root():
+    return {
+        "title": "Vehicle Query API",
+        "description": "High-performance API for vehicle data scraping and consultation.",
+        "version": "1.2.0",
+        "health_check": "/health",
+        "documentation": "/docs"
+    }
+
 @app.get("/health")
 async def health_check():
     loop = asyncio.get_event_loop()

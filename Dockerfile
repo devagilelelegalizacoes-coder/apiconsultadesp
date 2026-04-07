@@ -27,7 +27,7 @@ RUN playwright install chromium
 COPY . .
 
 # Expose the API port
-EXPOSE 8000
+EXPOSE 80
 
 # Metadata (Optional but useful for Portainer/Dashboard)
 LABEL version="1.2.0" \
@@ -35,4 +35,4 @@ LABEL version="1.2.0" \
 
 # Command to run the application
 # We use --workers 1 since scrapers are heavy and we manage concurrency internally
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "80", "--workers", "1"]
