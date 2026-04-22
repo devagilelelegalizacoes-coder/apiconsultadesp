@@ -77,6 +77,9 @@ class DetranRJScraper(BaseScraper):
                     await self.close()
                     return {"status": "success", "data": data}
                 
+                else:
+                    print("[!] [DETRAN-Cadastro] Falha ao obter token do Captcha. Pulando tentativa.")
+                    
                 await self.close()
             except Exception as e:
                 print(f"[!] [DETRAN-Cadastro] Error: {e}")
@@ -145,6 +148,9 @@ class DetranRJScraper(BaseScraper):
                     await self.close()
                     return {"status": "error", "message": str(e)}
             
+            else:
+                print("[!] [DETRAN-MultasDetalhe] Falha ao obter token do Captcha.")
+                
             await self.close()
             return {"status": "error", "message": "Captcha failed"}
         except Exception as e:
@@ -194,6 +200,9 @@ class DetranRJScraper(BaseScraper):
                 
                 await self.close()
                 return {"status": "success", "data": results}
+            
+            else:
+                print("[!] [DETRAN-NadaConsta] Falha ao obter token do Captcha.")
             
             await self.close()
             return {"status": "error", "message": "Captcha failed"}

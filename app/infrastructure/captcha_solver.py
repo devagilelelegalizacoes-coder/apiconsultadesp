@@ -145,13 +145,17 @@ class CaptchaSolver:
     # ───────────────────── Public unified interface ─────────────────────────
 
     async def solve_image_captcha(self, base64_image: str) -> Optional[str]:
-        if not self.api_key: return None
+        if not self.api_key:
+            print("[!] ERROR: CAPTCHA_API_KEY not configured in environment variables!")
+            return None
         if self.provider == "2captcha":
             return await self._solve_image_2captcha(base64_image)
         return await self._solve_image_anticaptcha(base64_image)
 
     async def solve_recaptcha_v2(self, sitekey: str, url: str, task_type: str = "NoCaptchaTaskProxyless") -> Optional[str]:
-        if not self.api_key: return None
+        if not self.api_key:
+            print("[!] ERROR: CAPTCHA_API_KEY not configured in environment variables!")
+            return None
         if self.provider == "2captcha":
             invisible = "invisible" in task_type.lower()
             return await self._solve_recaptcha_2captcha(sitekey, url, invisible=invisible)
