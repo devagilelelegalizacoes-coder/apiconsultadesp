@@ -39,7 +39,7 @@ class DetranRJScraper(BaseScraper):
                 await page.goto(url_cadastro)
                 await page.fill("#placa", placa)
                 
-                sitekey_element = await page.wait_for_selector("#divCaptcha")
+                sitekey_element = await page.wait_for_selector("#divCaptcha", state="attached")
                 sitekey = await sitekey_element.get_attribute("data-sitekey")
                 captcha_token = await solver.solve_recaptcha_v2(sitekey, url_cadastro, task_type="RecaptchaV2EnterpriseTaskProxyless")
                 
@@ -94,7 +94,7 @@ class DetranRJScraper(BaseScraper):
             await page.fill("#MultasRenavam", renavam)
             await page.fill("#MultasCpfcnpj", cpf)
             
-            sitekey_element = await page.wait_for_selector("#divCaptcha")
+            sitekey_element = await page.wait_for_selector("#divCaptcha", state="attached")
             sitekey = await sitekey_element.get_attribute("data-sitekey")
             captcha_token = await solver.solve_recaptcha_v2(sitekey, url_multas, task_type="RecaptchaV2EnterpriseTaskProxyless")
             
@@ -168,7 +168,7 @@ class DetranRJScraper(BaseScraper):
             await page.select_option("#tipo_doc", value=doc_type.lower())
             await page.fill("#num_doc", doc_num)
 
-            sitekey_element = await page.wait_for_selector("#divCaptcha")
+            sitekey_element = await page.wait_for_selector("#divCaptcha", state="attached")
             sitekey = await sitekey_element.get_attribute("data-sitekey")
             captcha_token = await solver.solve_recaptcha_v2(sitekey, url_nc, task_type="RecaptchaV2EnterpriseTaskProxyless")
             
