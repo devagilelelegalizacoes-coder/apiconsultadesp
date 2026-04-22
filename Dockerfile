@@ -30,8 +30,8 @@ COPY . .
 EXPOSE 80
 
 # Metadata (Optional but useful for Portainer/Dashboard)
-LABEL version="1.2.0" \
-      description="Automated Vehicle Debt Inquiry API"
+LABEL version="1.0.0" \
+      description="CONSULTA FACIL VEICULAR DESPACHANTE 2.0 API"
 
 # Command to run the application
 # We use --workers 1 since scrapers are heavy and we manage concurrency internally

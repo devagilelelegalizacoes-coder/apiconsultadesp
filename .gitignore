@@ -27,3 +27,15 @@ detran_rj_multas_debug_*
 *.csv
 *.json
 !app/config/*.json
+
+# Temporary scripts and tests
+test_scraper.py
+consultas*.py
+imageToSave.jpeg
+
+# AI assistant data
+.gemini/
+
+# System files
+.DS_Store
+*.bak
