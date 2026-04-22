@@ -3,7 +3,7 @@ import random
 import asyncio
 from typing import Optional, Dict, Any
 from playwright.async_api import async_playwright, Page, BrowserContext
-from playwright_stealth import stealth_async
+from playwright_stealth import Stealth
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -59,7 +59,7 @@ class BaseScraper:
         
         # Apply stealth plugin
         page = await self.context.new_page()
-        await stealth_async(page)
+        await Stealth().apply_stealth_async(page)
         return page
 
     async def human_delay(self, min_ms: int = 500, max_ms: int = 2000):

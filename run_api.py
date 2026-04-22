@@ -11,6 +11,5 @@ if __name__ == "__main__":
     print("Starting API with ProactorEventLoop policy for Windows...")
     
     # Run uvicorn with reload=True
-    # Running from this script ensures the event loop policy is set correctly 
-    # before uvicorn starts the server, which is critical for Playwright on Windows.
-    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=False, loop="asyncio")
+    # Run uvicorn (reload=True is disabled because it breaks the ProactorEventLoop policy on Windows)
+    uvicorn.run("app.main:app", host="127.0.0.1", port=8000)

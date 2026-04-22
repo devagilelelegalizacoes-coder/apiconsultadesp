@@ -30,12 +30,13 @@ from app.security.user_manager import user_manager
 load_dotenv()
 
 app = FastAPI(
-    title="High-Performance Vehicle Query API",
+    title="CONSULTA FACIL VEICULAR DESPACHANTE 2.0 API",
     description="API para consultas veiculares (DETRAN-RJ, SEFAZ-RJ, Bradesco) individuais ou consolidadas.",
-    version="1.2.0"
+    version="1.0.0"
 )
 
 app.add_middleware(
+
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
@@ -55,7 +56,11 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         raise HTTPException(status_code=401, detail="User not found")
     return user
 
-@app.post("/token")
+# ========================================
+# LOGIN E GERENCIAMENTO DE USUÁRIOS
+# ========================================
+
+@app.post("/token", tags=["Login"])
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
     user = await user_manager.get_user(form_data.username)
     if not user or not verify_password(form_data.password, user.get("hashed_password")):
@@ -64,7 +69,7 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     access_token = create_access_token(data={"sub": user["username"], "role": user.get("role", "user")})
     return {"access_token": access_token, "token_type": "bearer"}
 
-@app.post("/auth/register")
+@app.post("/auth/register", tags=["Login"])
 async def register_user(username: str, password: str, current_user: dict = Depends(get_current_user)):
     """Only existing active users can register new users (administrative)."""
     if current_user.get("role") != "admin":
@@ -95,7 +100,7 @@ async def shutdown_event():
 
 # --- ENDPOINTS INDIVIDUAIS ---
 
-@app.get("/detran/cadastro/{placa}")
+@app.get("/detran/cadastro/{placa}", tags=["Consultas Detran-RJ"])
 async def query_detran_cadastro(
     placa: str,
     token: str = Depends(get_current_user)
@@ -108,7 +113,7 @@ async def query_detran_cadastro(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/detran/multas/{renavam}")
+@app.get("/detran/multas/{renavam}", tags=["Consultas Detran-RJ"])
 async def query_detran_multas(
     renavam: str,
     cpf: str,
@@ -122,7 +127,7 @@ async def query_detran_multas(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/detran/nada-consta-apreendido/{placa}")
+@app.get("/detran/nada-consta-apreendido/{placa}", tags=["Consultas Detran-RJ"])
 async def query_detran_nada_consta_apreendido(
     placa: str,
     chassi: str,
@@ -139,7 +144,7 @@ async def query_detran_nada_consta_apreendido(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/sefaz/{renavam}")
+@app.get("/sefaz/{renavam}", tags=["Consultas IPVASefaz-RJ"])
 async def query_sefaz(
     renavam: str,
     token: str = Depends(get_current_user)
@@ -152,7 +157,7 @@ async def query_sefaz(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/bradesco/grt/{renavam}")
+@app.get("/bradesco/grt/{renavam}", tags=["Consultas Bradesco"])
 async def query_bradesco_grt(
     renavam: str,
     cpf: str,
@@ -166,7 +171,7 @@ async def query_bradesco_grt(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/bradesco/multas/{renavam}")
+@app.get("/bradesco/multas/{renavam}", tags=["Consultas Bradesco"])
 async def query_bradesco_multas(
     renavam: str,
     cpf: str,
@@ -180,7 +185,7 @@ async def query_bradesco_multas(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/dataf5/{placa}")
+@app.get("/dataf5/{placa}", tags=["Consultas completas com DataF5"])
 async def query_dataf5(
     placa: str,
     token: str = Depends(get_current_user)
@@ -193,7 +198,7 @@ async def query_dataf5(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/dataf5/gravame/{chassi}")
+@app.get("/dataf5/gravame/{chassi}", tags=["Consultas completas com DataF5"])
 async def query_dataf5_gravame(
     chassi: str,
     token: str = Depends(get_current_user)
@@ -208,7 +213,7 @@ async def query_dataf5_gravame(
 
 # --- ENDPOINT CONSOLIDADO ---
 
-@app.get("/veiculo/{renavam}")
+@app.get("/veiculo/{renavam}", tags=["Consulta debitos com Renavam placa e cpf"])
 async def query_vehicle(
     renavam: str, 
     cpf: str,
@@ -226,7 +231,7 @@ async def query_vehicle(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
 
-@app.get("/consulta/orcamento/{placa}")
+@app.get("/consulta/orcamento/{placa}", tags=["Consula orçamento com placa"])
 async def query_budget(
     placa: str,
     token: str = Depends(get_current_user)
@@ -276,7 +281,7 @@ async def get_job_status(
 @app.get("/")
 async def root():
     return {
-        "title": "Vehicle Query API",
+        "title": "Veículo API",
         "description": "High-performance API for vehicle data scraping and consultation.",
         "version": "1.2.0",
         "health_check": "/health",
