@@ -14,7 +14,8 @@ class CaptchaSolver:
       CAPTCHA_API_KEY=your_key
     """
     def __init__(self):
-        self.api_key = os.getenv("CAPTCHA_API_KEY")
+        # Try different possible env var names for the key
+        self.api_key = os.getenv("CAPTCHA_API_KEY") or os.getenv("2CAPTCHA_API_KEY") or os.getenv("ANTICAPTCHA_API_KEY")
         self.provider = os.getenv("CAPTCHA_PROVIDER", "anticaptcha").lower()
 
         if self.provider == "2captcha":
@@ -67,7 +68,7 @@ class CaptchaSolver:
             print(f"[!] 2captcha image error: {str(e)}")
         return None
 
-    async def _solve_recaptcha_2captcha(self, sitekey: str, url: str, invisible: bool = False) -> Optional[str]:
+    async def _solve_recaptcha_2captcha(self, sitekey: str, url: str, invisible: bool = False, enterprise: bool = False) -> Optional[str]:
         try:
             params = {
                 "key": self.api_key,
@@ -78,6 +79,8 @@ class CaptchaSolver:
             }
             if invisible:
                 params["invisible"] = 1
+            if enterprise:
+                params["enterprise"] = 1
             async with httpx.AsyncClient() as client:
                 resp = await client.post(self.submit_url, data=params, timeout=15)
                 data = resp.json()
@@ -158,7 +161,8 @@ class CaptchaSolver:
             return None
         if self.provider == "2captcha":
             invisible = "invisible" in task_type.lower()
-            return await self._solve_recaptcha_2captcha(sitekey, url, invisible=invisible)
+            enterprise = "enterprise" in task_type.lower()
+            return await self._solve_recaptcha_2captcha(sitekey, url, invisible=invisible, enterprise=enterprise)
         return await self._solve_recaptcha_anticaptcha(sitekey, url, task_type)
 
 solver = CaptchaSolver()

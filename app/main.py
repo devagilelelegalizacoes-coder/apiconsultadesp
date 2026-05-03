@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 import sys
 import asyncio
 import os
@@ -16,7 +19,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.coordinator import QueryCoordinator
 from app.infrastructure.supabase_db import db as cache
 from app.security.encryption import encrypt_data, decrypt_data
-from dotenv import load_dotenv
 from app.scrapers.detran_rj import DetranRJScraper
 from app.scrapers.sefaz_rj import SefazRJScraper
 from app.scrapers.bradesco import BradescoScraper
@@ -27,7 +29,6 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from app.security.jwt_handler import create_access_token, decode_access_token, verify_password
 from app.security.user_manager import user_manager
 
-load_dotenv()
 
 app = FastAPI(
     title="CONSULTA FACIL VEICULAR DESPACHANTE 2.0 API",

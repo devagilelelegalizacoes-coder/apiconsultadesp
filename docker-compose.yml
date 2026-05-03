@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    container_name: veiculos_api
+    restart: always
+    ports:
+      - "8000:80"
+    env_file:
+      - .env
+    environment:
+      # Ensure headless is always true in Docker
+      - HEADLESS=true
+    volumes:
+      - ./:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 80 --workers 1
+
+  worker:
+    build: .
+    container_name: veiculos_worker
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - HEADLESS=true
+    volumes:
+      - ./:/app
+    command: python3 -m app.core.worker
+    depends_on:
+      - api

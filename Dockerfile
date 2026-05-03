@@ -20,8 +20,8 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install -r requirements.txt
 
-# Install only Chromium for Playwright (fast and standard for scraping)
-RUN playwright install chromium
+# Install only Chromium for Playwright and system dependencies
+RUN playwright install --with-deps chromium
 
 # Copy the rest of the application code
 COPY . .

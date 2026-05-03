@@ -41,6 +41,7 @@ class DetranRJScraper(BaseScraper):
                 
                 sitekey_element = await page.wait_for_selector("#divCaptcha", state="attached")
                 sitekey = await sitekey_element.get_attribute("data-sitekey")
+                print(f"[*] [DETRAN-Cadastro] Resolvendo Captcha (Provedor: {solver.provider}, Sitekey: {sitekey})")
                 captcha_token = await solver.solve_recaptcha_v2(sitekey, url_cadastro, task_type="RecaptchaV2EnterpriseTaskProxyless")
                 
                 if captcha_token:
@@ -52,11 +53,9 @@ class DetranRJScraper(BaseScraper):
                     retorno_text = await retorno_locator.first.inner_text() if await retorno_locator.count() > 0 else ""
 
                     if "CAPTCHA INVÁLIDO" in retorno_text.upper():
-                        await self.close()
                         continue
 
                     if "VEÍCULO NÃO ENCONTRADO" in retorno_text.upper():
-                        await self.close()
                         return {"status": "success", "data": {}, "message": "Veículo não encontrado"}
 
                     fields = ["crlv-licenciamento", "crlv-nome", "crlv-placa", "crlv-especie", 
@@ -74,15 +73,14 @@ class DetranRJScraper(BaseScraper):
                     obs = (data.get("observacoes") or "").upper()
                     data["comunicacao_venda"] = "SIM" if "COMUNICAÇÃO DE VENDA" in obs or "INTENÇÃO DE VENDA" in obs else "NÃO"
                     
-                    await self.close()
                     return {"status": "success", "data": data}
                 
                 else:
                     print("[!] [DETRAN-Cadastro] Falha ao obter token do Captcha. Pulando tentativa.")
                     
-                await self.close()
             except Exception as e:
                 print(f"[!] [DETRAN-Cadastro] Error: {e}")
+            finally:
                 await self.close()
         
         return {"status": "error", "message": "Falha na consulta de cadastro."}
@@ -106,56 +104,49 @@ class DetranRJScraper(BaseScraper):
                 await page.click("#btPesquisar")
                 await self.human_delay(2000, 4000)
                 
-                try:
-                    await page.wait_for_selector(".tabelaDescricao, #retorno, .alert, #multas_nada_consta_mensagem_erro", state="visible", timeout=15000)
-                    tables = await page.locator(".tabelaDescricao").all()
-                    fines = []
+                await page.wait_for_selector(".tabelaDescricao, #retorno, .alert, #multas_nada_consta_mensagem_erro", state="visible", timeout=15000)
+                tables = await page.locator(".tabelaDescricao").all()
+                fines = []
+                
+                if not tables:
+                    err_text = await page.locator("#retorno, .alert, #multas_nada_consta_mensagem_erro").first.inner_text()
+                    if "NADA CONSTA" in err_text.upper() or "NÃO EXISTE" in err_text.upper():
+                        return {"status": "success", "data": [], "message": "Nada consta"}
+                    return {"status": "error", "message": err_text.strip()}
+                
+                for table in tables:
+                    fine_data = {}
+                    header_els = await table.locator("thead th").all()
+                    fine_data["tipo_status"] = (await header_els[0].inner_text()).strip() if header_els else ""
                     
-                    if not tables:
-                        err_text = await page.locator("#retorno, .alert, #multas_nada_consta_mensagem_erro").first.inner_text()
-                        if "NADA CONSTA" in err_text.upper() or "NÃO EXISTE" in err_text.upper():
-                            await self.close()
-                            return {"status": "success", "data": [], "message": "Nada consta"}
-                        await self.close()
-                        return {"status": "error", "message": err_text.strip()}
+                    cells = await table.locator("tbody td").all()
+                    for cell in cells:
+                        try:
+                            sub = cell.locator("span.sub-titulo")
+                            if await sub.count() > 0:
+                                k = (await sub.first.inner_text()).replace(":", "").strip()
+                                v = (await cell.inner_text()).replace(k, "").strip()
+                                if k: fine_data[k] = v
+                        except: continue
                     
-                    for table in tables:
-                        fine_data = {}
-                        header_els = await table.locator("thead th").all()
-                        fine_data["tipo_status"] = (await header_els[0].inner_text()).strip() if header_els else ""
-                        
-                        cells = await table.locator("tbody td").all()
-                        for cell in cells:
-                            try:
-                                sub = cell.locator("span.sub-titulo")
-                                if await sub.count() > 0:
-                                    k = (await sub.first.inner_text()).replace(":", "").strip()
-                                    v = (await cell.inner_text()).replace(k, "").strip()
-                                    if k: fine_data[k] = v
-                            except: continue
-                        
-                        if fine_data:
-                            clean = {}
-                            for k, v in fine_data.items():
-                                ck = k.lower().replace(" ", "_").replace("$", "").replace("valor_original_r", "valor_original").replace("valor_a_ser_pago_r", "valor_pago").strip()
-                                while "__" in ck: ck = ck.replace("__", "_")
-                                clean[ck.strip("_")] = v
-                            fines.append(clean)
-                    
-                    await self.close()
-                    return {"status": "success", "data": fines}
-                except Exception as e:
-                    await self.close()
-                    return {"status": "error", "message": str(e)}
+                    if fine_data:
+                        clean = {}
+                        for k, v in fine_data.items():
+                            ck = k.lower().replace(" ", "_").replace("$", "").replace("valor_original_r", "valor_original").replace("valor_a_ser_pago_r", "valor_pago").strip()
+                            while "__" in ck: ck = ck.replace("__", "_")
+                            clean[ck.strip("_")] = v
+                        fines.append(clean)
+                
+                return {"status": "success", "data": fines}
             
             else:
                 print("[!] [DETRAN-MultasDetalhe] Falha ao obter token do Captcha.")
+                return {"status": "error", "message": "Captcha failed"}
                 
-            await self.close()
-            return {"status": "error", "message": "Captcha failed"}
         except Exception as e:
-            await self.close()
             return {"status": "error", "message": str(e)}
+        finally:
+            await self.close()
 
     async def get_multas_data(self, renavam: str, cpf: str) -> Dict[str, Any]:
         """Wrapper for multas detailed with retries."""
@@ -198,14 +189,12 @@ class DetranRJScraper(BaseScraper):
                         v = "SIM" if "SIM" in p[1].upper() else "NÃO"
                         results["debitos"][k] = v
                 
-                await self.close()
                 return {"status": "success", "data": results}
             
             else:
                 print("[!] [DETRAN-NadaConsta] Falha ao obter token do Captcha.")
-            
-            await self.close()
-            return {"status": "error", "message": "Captcha failed"}
+                return {"status": "error", "message": "Captcha failed"}
         except Exception as e:
-            await self.close()
             return {"status": "error", "message": str(e)}
+        finally:
+            await self.close()

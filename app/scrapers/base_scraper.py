@@ -39,8 +39,11 @@ class BaseScraper:
             
         proxy = self._get_proxy_config()
         
+        # Determina o modo headless: True se em produção/Linux, False se configurado explicitamente
+        headless_env = os.getenv("HEADLESS", "true").lower() == "true"
+        
         self.browser = await self.playwright.chromium.launch(
-            headless=True,
+            headless=headless_env,
             proxy=proxy,
             args=[
                 "--disable-blink-features=AutomationControlled",

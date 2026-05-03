@@ -3,6 +3,8 @@ from datetime import datetime, timedelta
 from typing import Optional, Any
 from supabase import create_client, Client
 from dotenv import load_dotenv
+import json
+from app.security.encryption import encrypt_data, decrypt_data
 
 load_dotenv()
 
@@ -16,10 +18,19 @@ class SupabaseDB:
 
     def _init_client(self):
         """Synchronously initializes the Supabase client if credentials are available."""
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_KEY")
+        
+        if not url or not key:
+            print(f"[!] [Supabase] Missing credentials.")
+            print(f"[!] [Supabase] URL present: {bool(url)}")
+            print(f"[!] [Supabase] Key present: {bool(key)}")
+            self.client = None
+            return
+
         try:
-            if SUPABASE_URL and SUPABASE_KEY:
-                self.client = create_client(SUPABASE_URL, SUPABASE_KEY)
-                print("[*] [Supabase] Client initialized successfully.")
+            self.client = create_client(url, key)
+            print("[*] [Supabase] Client initialized successfully.")
         except Exception as e:
             print(f"[*] [Supabase] Initial connection error: {e}")
             self.client = None
@@ -47,7 +58,16 @@ class SupabaseDB:
                 # Check expiration (ensure timezone aware comparison)
                 now = datetime.now(expires_at.tzinfo)
                 if expires_at > now:
-                    return item["value"]
+                    try:
+                        raw_value = item["value"]
+                        # Se for string (criptografada) decripta e faz load
+                        if isinstance(raw_value, str):
+                            decrypted_str = decrypt_data(raw_value)
+                            return json.loads(decrypted_str)
+                        return raw_value
+                    except Exception as dec_err:
+                        print(f"Supabase Decrypt Error (Legacy Cache?): {dec_err}")
+                        return None
                 else:
                     # Cleanup expired item (async-like behavior in background would be better but keeping it simple)
                     self.client.table("vehicle_cache").delete().eq("key", key).execute()
@@ -62,9 +82,14 @@ class SupabaseDB:
             return
         try:
             expires_at = (datetime.now() + timedelta(seconds=expire)).isoformat()
+            
+            # Converte o valor para string JSON e encripta
+            json_str = json.dumps(value)
+            encrypted_value = encrypt_data(json_str)
+
             data = {
                 "key": key,
-                "value": value,
+                "value": encrypted_value,
                 "expires_at": expires_at,
                 "updated_at": datetime.now().isoformat()
             }
