@@ -94,8 +94,8 @@ class CaptchaSolver:
     # ──────────────────────── Anti-Captcha helpers ─────────────────────────
 
     async def _poll_anticaptcha(self, task_id: int) -> Optional[str]:
-        for _ in range(60):
-            await asyncio.sleep(2)
+        for attempt in range(60):
+            await asyncio.sleep(3)
             try:
                 async with httpx.AsyncClient() as client:
                     resp = await client.post(self.result_url_anti, json={
@@ -103,14 +103,23 @@ class CaptchaSolver:
                         "taskId": task_id
                     }, timeout=10)
                     data = resp.json()
-                    if data.get("status") == "ready":
+                    status = data.get("status")
+                    error_id = data.get("errorId", 0)
+                    
+                    if attempt % 5 == 0:  # Log every 5 attempts
+                        print(f"[*] [Captcha] Poll attempt {attempt+1}, status={status}, errorId={error_id}")
+                    
+                    if status == "ready":
                         solution = data.get("solution", {})
-                        return solution.get("text") or solution.get("gRecaptchaResponse")
-                    if data.get("errorId"):
-                        print(f"[!] Captcha error: {data.get('errorDescription')}")
+                        token = solution.get("text") or solution.get("gRecaptchaResponse")
+                        print(f"[*] [Captcha] Solved! Token length: {len(token) if token else 0}")
+                        return token
+                    if error_id and error_id != 0:
+                        print(f"[!] [Captcha] API error: {data.get('errorDescription')} (errorId={error_id})")
                         return None
             except Exception as e:
-                print(f"[!] Polling error: {str(e)}")
+                print(f"[!] [Captcha] Polling error: {str(e)}")
+        print(f"[!] [Captcha] Timeout: captcha not solved after 60 attempts.")
         return None
 
     async def _solve_image_anticaptcha(self, base64_image: str) -> Optional[str]:
@@ -129,20 +138,36 @@ class CaptchaSolver:
 
     async def _solve_recaptcha_anticaptcha(self, sitekey: str, url: str, task_type: str) -> Optional[str]:
         try:
+            payload = {
+                "clientKey": self.api_key,
+                "task": {
+                    "type": task_type,
+                    "websiteURL": url,
+                    "websiteKey": sitekey
+                }
+            }
+            print(f"[*] [Captcha] Submitting task: type={task_type}, sitekey={sitekey[:20]}...")
             async with httpx.AsyncClient() as client:
-                resp = await client.post(self.create_url, json={
-                    "clientKey": self.api_key,
-                    "task": {
-                        "type": task_type,
-                        "websiteURL": url,
-                        "websiteKey": sitekey
-                    }
-                }, timeout=10)
-                task_id = resp.json().get("taskId")
+                resp = await client.post(self.create_url, json=payload, timeout=15)
+                data = resp.json()
+                print(f"[*] [Captcha] Create task response: errorId={data.get('errorId')}, taskId={data.get('taskId')}, desc={data.get('errorDescription', 'OK')}")
+                
+                error_id = data.get("errorId", 0)
+                if error_id and error_id != 0:
+                    print(f"[!] [Captcha] Failed to create task: {data.get('errorDescription')} (errorId={error_id})")
+                    # Retry with standard task type if Enterprise fails
+                    if "Enterprise" in task_type:
+                        fallback_type = task_type.replace("Enterprise", "")
+                        print(f"[*] [Captcha] Retrying with fallback task type: {fallback_type}")
+                        return await self._solve_recaptcha_anticaptcha(sitekey, url, fallback_type)
+                    return None
+                
+                task_id = data.get("taskId")
                 if task_id:
                     return await self._poll_anticaptcha(task_id)
+                print(f"[!] [Captcha] No taskId returned: {data}")
         except Exception as e:
-            print(f"[!] Create task error (ReCaptcha): {str(e)}")
+            print(f"[!] [Captcha] Create task error (ReCaptcha): {str(e)}")
         return None
 
     # ───────────────────── Public unified interface ─────────────────────────
