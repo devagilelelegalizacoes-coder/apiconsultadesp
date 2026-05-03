@@ -45,9 +45,29 @@ class DetranRJScraper(BaseScraper):
                 captcha_token = await solver.solve_recaptcha_v2(sitekey, url_cadastro, task_type="RecaptchaV2EnterpriseTaskProxyless")
                 
                 if captcha_token:
-                    await page.evaluate(f"() => {{ const el = document.getElementById('g-recaptcha-response'); if (el) el.value = '{captcha_token}'; }}")
+                    # Inject token into the hidden field AND trigger the official reCAPTCHA callback
+                    await page.evaluate(f"""
+                        () => {{
+                            const el = document.getElementById('g-recaptcha-response');
+                            if (el) el.value = '{captcha_token}';
+                            // Trigger reCAPTCHA callback so the server accepts the token
+                            if (window.grecaptcha && window.grecaptcha.getResponse) {{
+                                const widgets = document.querySelectorAll('.g-recaptcha');
+                                widgets.forEach(w => {{
+                                    const cb = w.getAttribute('data-callback');
+                                    if (cb && window[cb]) window[cb]('{captcha_token}');
+                                }});
+                            }}
+                        }}
+                    """)
+                    await self.human_delay(500, 1000)
                     await page.click("#btPesquisar")
-                    await self.human_delay(2000, 4000)
+                    
+                    # Wait for the page response robustly (up to 20s) instead of a fixed delay
+                    try:
+                        await page.wait_for_selector("#retorno, #crlv-placa, .alert-danger", state="visible", timeout=20000)
+                    except Exception:
+                        await self.human_delay(3000, 5000)
                     
                     retorno_locator = page.locator("#retorno, .alert-danger")
                     retorno_text = await retorno_locator.first.inner_text() if await retorno_locator.count() > 0 else ""
@@ -100,7 +120,20 @@ class DetranRJScraper(BaseScraper):
             captcha_token = await solver.solve_recaptcha_v2(sitekey, url_multas, task_type="RecaptchaV2EnterpriseTaskProxyless")
             
             if captcha_token:
-                await page.evaluate(f"() => {{ const el = document.getElementById('g-recaptcha-response'); if (el) el.value = '{captcha_token}'; }}")
+                await page.evaluate(f"""
+                    () => {{
+                        const el = document.getElementById('g-recaptcha-response');
+                        if (el) el.value = '{captcha_token}';
+                        if (window.grecaptcha && window.grecaptcha.getResponse) {{
+                            const widgets = document.querySelectorAll('.g-recaptcha');
+                            widgets.forEach(w => {{
+                                const cb = w.getAttribute('data-callback');
+                                if (cb && window[cb]) window[cb]('{captcha_token}');
+                            }});
+                        }}
+                    }}
+                """)
+                await self.human_delay(500, 1000)
                 await page.click("#btPesquisar")
                 await self.human_delay(2000, 4000)
                 
@@ -170,7 +203,20 @@ class DetranRJScraper(BaseScraper):
             captcha_token = await solver.solve_recaptcha_v2(sitekey, url_nc, task_type="RecaptchaV2EnterpriseTaskProxyless")
             
             if captcha_token:
-                await page.evaluate(f"() => {{ const el = document.getElementById('g-recaptcha-response'); if (el) el.value = '{captcha_token}'; }}")
+                await page.evaluate(f"""
+                    () => {{
+                        const el = document.getElementById('g-recaptcha-response');
+                        if (el) el.value = '{captcha_token}';
+                        if (window.grecaptcha && window.grecaptcha.getResponse) {{
+                            const widgets = document.querySelectorAll('.g-recaptcha');
+                            widgets.forEach(w => {{
+                                const cb = w.getAttribute('data-callback');
+                                if (cb && window[cb]) window[cb]('{captcha_token}');
+                            }});
+                        }}
+                    }}
+                """)
+                await self.human_delay(500, 1000)
                 await page.click("#btPesquisar")
                 await page.wait_for_selector("#retorno", state="visible", timeout=30000)
                 
