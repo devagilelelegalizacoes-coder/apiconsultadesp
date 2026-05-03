@@ -45,32 +45,73 @@ class DetranRJScraper(BaseScraper):
                 captcha_token = await solver.solve_recaptcha_v2(sitekey, url_cadastro, task_type="RecaptchaV2EnterpriseTaskProxyless")
                 
                 if captcha_token:
-                    # Inject token into the hidden field AND trigger the official reCAPTCHA callback
-                    await page.evaluate(f"""
+                    print(f"[*] [DETRAN-Cadastro] Token obtido ({len(captcha_token)} chars). Injetando na pagina...")
+                    
+                    # Strategy: inject token + try all known callback methods
+                    inject_result = await page.evaluate(f"""
                         () => {{
+                            // 1. Fill the hidden field
                             const el = document.getElementById('g-recaptcha-response');
-                            if (el) el.value = '{captcha_token}';
-                            // Trigger reCAPTCHA callback so the server accepts the token
-                            if (window.grecaptcha && window.grecaptcha.getResponse) {{
-                                const widgets = document.querySelectorAll('.g-recaptcha');
-                                widgets.forEach(w => {{
-                                    const cb = w.getAttribute('data-callback');
-                                    if (cb && window[cb]) window[cb]('{captcha_token}');
-                                }});
-                            }}
+                            if (el) {{ el.value = '{captcha_token}'; el.style.display = 'block'; }}
+                            
+                            // 2. Also fill any textarea variants
+                            document.querySelectorAll('textarea[name="g-recaptcha-response"]').forEach(t => t.value = '{captcha_token}');
+
+                            // 3. Try data-callback approach
+                            let callbackFired = false;
+                            document.querySelectorAll('.g-recaptcha, [data-callback]').forEach(w => {{
+                                const cb = w.getAttribute('data-callback');
+                                if (cb && window[cb]) {{ window[cb]('{captcha_token}'); callbackFired = true; }}
+                            }});
+                            
+                            // 4. Try internal grecaptcha enterprise callback structure
+                            try {{
+                                const cfg = window.___grecaptcha_cfg;
+                                if (cfg && cfg.clients) {{
+                                    Object.values(cfg.clients).forEach(client => {{
+                                        if (client && client.aa && client.aa.l && client.aa.l.callback) {{
+                                            client.aa.l.callback('{captcha_token}');
+                                            callbackFired = true;
+                                        }}
+                                    }});
+                                }}
+                            }} catch(e) {{}}
+                            
+                            return {{ el_found: !!el, callback_fired: callbackFired }};
                         }}
                     """)
-                    await self.human_delay(500, 1000)
-                    await page.click("#btPesquisar")
+                    print(f"[*] [DETRAN-Cadastro] Inject result: {inject_result}")
+                    await self.human_delay(800, 1200)
                     
-                    # Wait for the page response robustly (up to 20s) instead of a fixed delay
+                    print(f"[*] [DETRAN-Cadastro] Clicando em #btPesquisar...")
                     try:
-                        await page.wait_for_selector("#retorno, #crlv-placa, .alert-danger", state="visible", timeout=20000)
-                    except Exception:
-                        await self.human_delay(3000, 5000)
+                        await page.click("#btPesquisar", timeout=5000)
+                    except Exception as click_err:
+                        print(f"[!] [DETRAN-Cadastro] Click falhou ({click_err}), tentando via JS...")
+                        await page.evaluate("document.getElementById('btPesquisar').click()")
+                    
+                    print(f"[*] [DETRAN-Cadastro] Aguardando resposta da pagina...")
+                    
+                    # Wait for the page response robustly (up to 25s)
+                    found_selector = None
+                    try:
+                        found_selector = await page.wait_for_selector(
+                            "#retorno, #crlv-placa, .alert-danger, #erroCaptchaTop",
+                            state="visible", timeout=25000
+                        )
+                        print(f"[*] [DETRAN-Cadastro] Pagina respondeu!")
+                    except Exception as wfs_err:
+                        current_url = page.url
+                        page_title = await page.title()
+                        print(f"[!] [DETRAN-Cadastro] Timeout aguardando resposta. URL={current_url}, Title={page_title}")
+                        # Dump visible text to understand page state
+                        body_text = await page.evaluate("document.body.innerText.substring(0, 500)")
+                        print(f"[!] [DETRAN-Cadastro] Conteudo da pagina: {body_text}")
+                        await self.human_delay(3000, 4000)
                     
                     retorno_locator = page.locator("#retorno, .alert-danger")
                     retorno_text = await retorno_locator.first.inner_text() if await retorno_locator.count() > 0 else ""
+                    print(f"[*] [DETRAN-Cadastro] Texto retorno: '{retorno_text[:100]}'")
 
                     if "CAPTCHA INVÁLIDO" in retorno_text.upper():
                         continue
