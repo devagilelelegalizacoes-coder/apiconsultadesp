@@ -85,7 +85,7 @@ class DetranRJScraper(BaseScraper):
         max_retries = 2
         for attempt in range(max_retries + 1):
             print(f"[*] [DETRAN-Cadastro] Starting query for Placa: {placa} (Attempt {attempt+1})")
-            page = await self.init_browser()
+            page = await self.init_browser(use_stealth=False)
             try:
                 url_cadastro = "https://www2.detran.rj.gov.br/portal/veiculos/consultaCadastro"
                 await page.goto(url_cadastro)
@@ -169,7 +169,7 @@ class DetranRJScraper(BaseScraper):
     async def get_multas_detalhadas(self, renavam: str, cpf: str) -> Dict[str, Any]:
         """Scrapes fine data with detailed parsing for Transitado/Renainf."""
         print(f"[*] [DETRAN-MultasDetalhe] Starting query for Renavam: {renavam}")
-        page = await self.init_browser()
+        page = await self.init_browser(use_stealth=False)
         try:
             url_multas = "https://www2.detran.rj.gov.br/portal/multas/nadaConsta"
             await page.goto(url_multas)
@@ -238,7 +238,7 @@ class DetranRJScraper(BaseScraper):
     async def get_nada_consta_apreendido_data(self, placa: str, chassi: str, renavam: str, doc_type: str, doc_num: str) -> Dict[str, Any]:
         """Scrapes clearance data for impounded vehicles (Nada Consta Apreendido)."""
         print(f"[*] [DETRAN-NadaConsta] Starting query for Placa: {placa}")
-        page = await self.init_browser()
+        page = await self.init_browser(use_stealth=False)
         try:
             url_nc = "https://www2.detran.rj.gov.br/portal/veiculos/consultaNadaConsta"
             await page.goto(url_nc)

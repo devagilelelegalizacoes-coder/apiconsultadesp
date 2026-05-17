@@ -33,7 +33,7 @@ class BaseScraper:
             config["password"] = self.proxy_pass
         return config
 
-    async def init_browser(self):
+    async def init_browser(self, use_stealth: bool = True):
         if not self.playwright:
             self.playwright = await async_playwright().start()
             
@@ -67,7 +67,11 @@ class BaseScraper:
         
         # Apply stealth plugin
         page = await self.context.new_page()
-        await stealth_async(page)
+        if use_stealth:
+            try:
+                await stealth_async(page)
+            except Exception as e:
+                print(f"[!] [BaseScraper] Failed to apply stealth: {e}")
         
         # Add page console logging and network error listeners for debugging production server issues
         page.on("console", lambda msg: print(f"[*] [Browser Console] {msg.type.upper()}: {msg.text}"))
