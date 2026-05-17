@@ -68,6 +68,12 @@ class BaseScraper:
         # Apply stealth plugin
         page = await self.context.new_page()
         await stealth_async(page)
+        
+        # Add page console logging and network error listeners for debugging production server issues
+        page.on("console", lambda msg: print(f"[*] [Browser Console] {msg.type.upper()}: {msg.text}"))
+        page.on("pageerror", lambda err: print(f"[!] [Browser PageError] {err}"))
+        page.on("requestfailed", lambda req: print(f"[!] [Browser Net Error] {req.url}: {req.failure.error_text if req.failure else 'Unknown error'}"))
+        
         return page
 
     async def human_delay(self, min_ms: int = 500, max_ms: int = 2000):
