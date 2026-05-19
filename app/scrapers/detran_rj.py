@@ -183,8 +183,12 @@ class DetranRJScraper(BaseScraper):
             if captcha_token:
                 inject_result = await self._inject_recaptcha_token(page, captcha_token)
                 print(f"[*] [DETRAN-MultasDetalhe] Inject result: {inject_result}")
-                await self.human_delay(500, 1000)
-                await page.click("#btPesquisar")
+                print(f"[*] [DETRAN-MultasDetalhe] Clicando em #btPesquisar...")
+                try:
+                    await page.click("#btPesquisar", timeout=5000)
+                except Exception as click_err:
+                    print(f"[!] [DETRAN-MultasDetalhe] Click falhou ({click_err}), tentando via JS...")
+                    await page.evaluate("document.getElementById('btPesquisar').click()")
                 await self.human_delay(2000, 4000)
                 
                 await page.wait_for_selector(".tabelaDescricao, #retorno, .alert, #multas_nada_consta_mensagem_erro", state="visible", timeout=15000)
@@ -254,9 +258,12 @@ class DetranRJScraper(BaseScraper):
             
             if captcha_token:
                 inject_result = await self._inject_recaptcha_token(page, captcha_token)
-                print(f"[*] [DETRAN-NadaConsta] Inject result: {inject_result}")
-                await self.human_delay(500, 1000)
-                await page.click("#btPesquisar")
+                print(f"[*] [DETRAN-NadaConsta] Clicando em #btPesquisar...")
+                try:
+                    await page.click("#btPesquisar", timeout=5000)
+                except Exception as click_err:
+                    print(f"[!] [DETRAN-NadaConsta] Click falhou ({click_err}), tentando via JS...")
+                    await page.evaluate("document.getElementById('btPesquisar').click()")
                 await page.wait_for_selector("#retorno", state="visible", timeout=30000)
                 
                 ret_text = await page.locator("#retorno").inner_text()

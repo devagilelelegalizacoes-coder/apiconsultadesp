@@ -1,4 +1,5 @@
 import os
+import sys
 import random
 import asyncio
 from typing import Optional, Dict, Any
@@ -74,9 +75,39 @@ class BaseScraper:
                 print(f"[!] [BaseScraper] Failed to apply stealth: {e}")
         
         # Add page console logging and network error listeners for debugging production server issues
-        page.on("console", lambda msg: print(f"[*] [Browser Console] {msg.type.upper()}: {msg.text}"))
+        def safe_print_console(msg):
+            try:
+                print(f"[*] [Browser Console] {msg.type.upper()}: {msg.text}")
+            except UnicodeEncodeError:
+                try:
+                    encoding = sys.stdout.encoding or 'utf-8'
+                    safe_text = msg.text.encode(encoding, errors='backslashreplace').decode(encoding)
+                    print(f"[*] [Browser Console] {msg.type.upper()}: {safe_text}")
+                except:
+                    pass
+            except:
+                pass
+
+        def safe_print_request_failed(req):
+            try:
+                failure = req.failure
+                err_text = "Unknown error"
+                if failure:
+                    if isinstance(failure, str):
+                        err_text = failure
+                    elif hasattr(failure, "error_text"):
+                        err_text = failure.error_text
+                    elif isinstance(failure, dict) and "errorText" in failure:
+                        err_text = failure["errorText"]
+                    else:
+                        err_text = str(failure)
+                print(f"[!] [Browser Net Error] {req.url}: {err_text}")
+            except Exception:
+                pass
+
+        page.on("console", safe_print_console)
         page.on("pageerror", lambda err: print(f"[!] [Browser PageError] {err}"))
-        page.on("requestfailed", lambda req: print(f"[!] [Browser Net Error] {req.url}: {req.failure.error_text if req.failure else 'Unknown error'}"))
+        page.on("requestfailed", safe_print_request_failed)
         
         return page
 
