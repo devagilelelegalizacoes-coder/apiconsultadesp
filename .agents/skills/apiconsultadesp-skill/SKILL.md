@@ -29,10 +29,17 @@ Siga rigorosamente as diretrizes abaixo para manter a consistência, segurança 
 Todos os scrapers veiculares devem:
 1.  **Herdarem de `BaseScraper`** (`app/scrapers/base_scraper.py`).
 2.  **Chamar `self.init_browser(use_stealth=...)`** para inicializar o Chromium de forma idêntica (carregando proxies do `.env` e acoplando listeners robustos).
-3.  **Encapsular toda a lógica em blocos `try/except`** e retornar sempre um dicionário estruturado:
+3.  **Implementar Loops de Tentativa (Retries) Obrigatórios**:
+    *   Todos os scrapers governamentais (como os do portal do DETRAN-RJ) devem possuir um loop de tentativas (`max_retries = 2`, totalizando até 3 tentativas: `for attempt in range(max_retries + 1):`).
+    *   **Regra de Reciclagem de Browser**: A inicialização do browser (`page = await self.init_browser(...)`) deve ocorrer **dentro** do loop de tentativas, e o encerramento (`await self.close()`) deve ser chamado obrigatoriamente no bloco `finally` interno de cada tentativa para garantir que sessões com captchas expirados ou falhas de rede sejam totalmente descartadas e recriadas do zero.
+4.  **Validar Mensagens de Erro no Retorno da Página (Captchas Inválidos)**:
+    *   Se a resposta da página após o clique no botão de consulta retornar `"CAPTCHA INVÁLIDO"`, o scraper deve registrar o log correspondente, executar um `continue` para reiniciar o loop e tentar resolver o captcha novamente em uma nova sessão do browser.
+5.  **Extrair Erros Descritivos e Específicos do Corpo da Página (`document.body.innerText`)**:
+    *   Em caso de timeouts aguardando seletores de resultados, o scraper deve ler o conteúdo total da página (`await page.evaluate("document.body.innerText")`).
+    *   Se constarem erros do tipo `"não corresponde ao do proprietário registrado"`, `"Renavam incorreto"` ou `"inválido"`, o scraper deve retornar a mensagem exata como um erro (`{"status": "error", "message": "..."}`) em vez de cair em falsos-positivos (como retornar Nada Consta vazio) ou falhas genéricas.
+6.  **Encapsular toda a lógica em blocos `try/except`** e retornar sempre um dicionário estruturado:
     *   Sucesso: `{"status": "success", "source": "NomePortal", "data": {...}}`
     *   Erro: `{"status": "error", "message": "Descrição detalhada do erro"}`
-4.  **Executar obrigatoriamente `await self.close()` no bloco `finally`** para evitar vazamentos de memória (memory leaks) e processos órfãos do Chromium em produção.
 
 ---
 

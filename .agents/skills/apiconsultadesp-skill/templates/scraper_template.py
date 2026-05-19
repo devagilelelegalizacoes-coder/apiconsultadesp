@@ -37,79 +37,87 @@ class TemplateScraper(BaseScraper):
 
     async def get_vehicle_data(self, placa: str) -> Dict[str, Any]:
         """
-        Consulta padrão para coleta de dados de veículo.
+        Consulta padrão para coleta de dados de veículo com retries e recycling do browser.
         Substitua com a lógica específica do novo portal.
         """
-        print(f"[*] [Template] Iniciando consulta para Placa: {placa}")
-        
-        # Inicializa o browser e abre uma nova aba com os listeners e stealth (se ativado)
-        page = await self.init_browser(use_stealth=True)
-        
-        try:
-            # 1. Navegar para a página de consulta
-            url_consulta = "https://www.exampleportal.com/consulta"
-            await page.goto(url_consulta)
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            print(f"[*] [Template] Iniciando consulta para Placa: {placa} (Tentativa {attempt+1})")
             
-            # 2. Preencher os parâmetros
-            await page.fill("#placa-input", placa)
-            
-            # 3. Tratamento de Captcha (ReCaptcha V2 / Enterprise)
-            print("[*] [Template] Localizando seletor de Captcha...")
-            sitekey_element = await page.wait_for_selector("#recaptcha-widget", state="attached")
-            sitekey = await sitekey_element.get_attribute("data-sitekey")
-            
-            print(f"[*] [Template] Resolvendo Captcha com provedor {solver.provider}...")
-            # Tipos de tarefas comuns: NoCaptchaTaskProxyless ou RecaptchaV2EnterpriseTaskProxyless
-            token = await solver.solve_recaptcha_v2(
-                sitekey=sitekey, 
-                url=url_consulta, 
-                task_type="NoCaptchaTaskProxyless"
-            )
-            
-            if not token:
-                raise Exception("Falha na resolução do Captcha (Timeout/API Key errada).")
-                
-            print("[*] [Template] Injetando token na página...")
-            # Chama o utilitário de injeção padrão (ou implemente localmente caso mude o campo)
-            await page.evaluate(f"document.getElementById('g-recaptcha-response').value = '{token}';")
-            
-            # 4. Envio do Formulário (com clique robusto JS fallback)
-            print("[*] [Template] Enviando consulta...")
+            # Inicializa o browser de forma limpa DENTRO do loop de tentativas
+            page = await self.init_browser(use_stealth=True)
             try:
-                await page.click("#btn-consultar", timeout=5000)
+                # 1. Navegar para a página de consulta
+                url_consulta = "https://www.exampleportal.com/consulta"
+                await page.goto(url_consulta)
+                
+                # 2. Preencher os parâmetros
+                await page.fill("#placa-input", placa)
+                
+                # 3. Tratamento de Captcha (ReCaptcha V2 / Enterprise)
+                print("[*] [Template] Localizando seletor de Captcha...")
+                sitekey_element = await page.wait_for_selector("#recaptcha-widget", state="attached")
+                sitekey = await sitekey_element.get_attribute("data-sitekey")
+                
+                print(f"[*] [Template] Resolvendo Captcha com provedor {solver.provider}...")
+                token = await solver.solve_recaptcha_v2(
+                    sitekey=sitekey, 
+                    url=url_consulta, 
+                    task_type="NoCaptchaTaskProxyless"
+                )
+                
+                if not token:
+                    print("[!] [Template] Falha ao obter token do Captcha. Tentando novamente...")
+                    continue
+                    
+                print("[*] [Template] Injetando token na página...")
+                await page.evaluate(f"document.getElementById('g-recaptcha-response').value = '{token}';")
+                
+                # 4. Envio do Formulário (com clique robusto JS fallback)
+                print("[*] [Template] Enviando consulta...")
+                try:
+                    await page.click("#btn-consultar", timeout=5000)
+                except Exception as e:
+                    print(f"[!] Clique direto falhou ({e}), clicando via JS...")
+                    await page.evaluate("document.getElementById('btn-consultar').click()")
+                    
+                # 5. Aguarda retorno e faz o parsing
+                try:
+                    await page.wait_for_selector("#resultado-dados, .erro-mensagem, .captcha-invalido", state="visible", timeout=25000)
+                except Exception as wfs_err:
+                    print(f"[!] [Template] Timeout aguardando resposta. Capturando body...")
+                    
+                # Checar se a página retornou erro de Captcha Inválido para tentar de novo
+                body_text = await page.evaluate("document.body.innerText")
+                if "captcha inválido" in body_text.lower() or await page.locator(".captcha-invalido").count() > 0:
+                    print("[!] [Template] Captcha inválido detectado pelo portal. Tentando novamente...")
+                    continue
+                    
+                # Checar mensagens de erro específicas do portal
+                if await page.locator(".erro-mensagem").count() > 0:
+                    msg_erro = await page.locator(".erro-mensagem").inner_text()
+                    if "não encontrado" in msg_erro.lower() or "não existe" in msg_erro.lower():
+                        return {"status": "success", "data": {}, "message": "Veículo não encontrado."}
+                    return {"status": "error", "message": msg_erro.strip()}
+                    
+                # Parsing dos dados estruturados
+                data = {
+                    "marca_modelo": (await page.locator("#marca-modelo").inner_text()).strip(),
+                    "renavam": (await page.locator("#renavam").inner_text()).strip(),
+                    "ano": (await page.locator("#ano-fabricacao").inner_text()).strip()
+                }
+                
+                return {
+                    "status": "success",
+                    "source": "TemplatePortal",
+                    "data": data
+                }
+                
             except Exception as e:
-                print(f"[!] Clique direto falhou ({e}), clicando via JS...")
-                await page.evaluate("document.getElementById('btn-consultar').click()")
+                print(f"[!] [Template] Erro na tentativa {attempt+1}: {e}")
+            finally:
+                # CRÍTICO: Sempre fechar o browser no final do bloco de cada tentativa
+                # para reciclar o contêiner e evitar vazamento de memória.
+                await self.close()
                 
-            # 5. Aguarda retorno e faz o parsing
-            await page.wait_for_selector("#resultado-dados, .erro-mensagem", state="visible", timeout=15000)
-            
-            # Checar mensagens de erro do portal
-            if await page.locator(".erro-mensagem").count() > 0:
-                msg_erro = await page.locator(".erro-mensagem").inner_text()
-                if "não encontrado" in msg_erro.lower():
-                    return {"status": "success", "data": {}, "message": "Veículo não encontrado."}
-                raise Exception(f"Erro retornado pelo portal: {msg_erro}")
-                
-            # Parsing dos dados estruturados
-            data = {
-                "marca_modelo": (await page.locator("#marca-modelo").inner_text()).strip(),
-                "renavam": (await page.locator("#renavam").inner_text()).strip(),
-                "ano": (await page.locator("#ano-fabricacao").inner_text()).strip()
-            }
-            
-            return {
-                "status": "success",
-                "source": "TemplatePortal",
-                "data": data
-            }
-            
-        except Exception as e:
-            print(f"[!] [Template] Erro na consulta: {e}")
-            return {
-                "status": "error",
-                "message": str(e)
-            }
-        finally:
-            # CRÍTICO: Sempre fechar o browser no final do bloco para evitar leaks de memória no servidor
-            await self.close()
+        return {"status": "error", "message": "Falha na consulta após o número máximo de tentativas."}
