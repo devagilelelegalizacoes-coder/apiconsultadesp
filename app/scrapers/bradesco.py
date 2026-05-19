@@ -24,149 +24,182 @@ class BradescoScraper(BaseScraper):
 
     async def get_grt_debts(self, renavam: str, cpf_cnpj: str) -> Dict[str, Any]:
         """Consulta débitos de IPVA/GRT (Licenciamento Anual)."""
-        page = await self.init_browser()
-        scraped_data = []
-        total_geral = 0.0
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            print(f"[*] [Bradesco-GRT] Iniciando consulta para Renavam: {renavam} (Tentativa {attempt+1})")
+            page = await self.init_browser()
+            scraped_data = []
+            total_geral = 0.0
 
-        try:
-            url = "https://www.ib7.bradesco.com.br/ibpfdetranrj/DebitoVeiculoRJGRTLoaderAction.do"
-            await page.goto(url, wait_until="networkidle")
-            
-            is_iframe = await page.locator("iframe#body-iframe").count() > 0
-            target = page.frame_locator("iframe#body-iframe") if is_iframe else page
-            
-            await self._fill_login_form(target, renavam, cpf_cnpj)
-            await target.get_by_title("Continuar").click()
-            
-            # Espera lista de exercícios
             try:
-                await target.get_by_text("Selecione o exercício").wait_for(timeout=15000)
-            except Exception:
-                if "RENAVAM" not in (await target.locator("body").inner_text()):
-                    error_msg = await target.locator(".erro_msg").inner_text() if await target.locator(".erro_msg").count() > 0 else "Dados não encontrados."
-                    if "NÃO ENCONTRADO" in error_msg.upper() or "NÃO EXISTEM" in error_msg.upper() or "DADOS NÃO ENCONTRADOS" in error_msg.upper():
-                        return {"status": "success", "total_somado": "R$ 0,00", "detalhes": [], "message": "Nada consta"}
-                    return {"status": "error", "message": error_msg}
-
-            radios = await target.get_by_title("Marque para selecionar o", exact=False).all()
-            total_exercicios = len(radios)
-            
-            if total_exercicios == 0:
-                raw_text = await target.locator("body").inner_text()
-                extracted = self._parse_details(raw_text)
-                if extracted.get("valor") != "NADA CONSTA":
-                     scraped_data.append(extracted)
-                     total_geral += self._to_float(extracted.get("valor"))
+                url = "https://www.ib7.bradesco.com.br/ibpfdetranrj/DebitoVeiculoRJGRTLoaderAction.do"
+                await page.goto(url, wait_until="networkidle")
                 
-            for i in range(total_exercicios):
-                current_radios = await target.get_by_title("Marque para selecionar o", exact=False).all()
-                if i < len(current_radios):
-                    # Using click instead of check as it triggers navigation/Ajax
-                    await current_radios[i].click()
-                    await self.human_delay(2000, 3000) # Give it time for Ajax/Nav
-                    try:
-                        await page.wait_for_load_state("networkidle", timeout=10000)
-                    except: pass
-                    
-                    container = target.locator("form[name='debitoVeiculoRJForm']")
-                    if await container.count() == 0:
-                         container = target.locator("body")
-                    
-                    raw_text = await container.inner_text()
-                    extracted_item = self._parse_details(raw_text)
-                    
-                    if extracted_item.get("exercicio") == "NADA CONSTA":
-                        for year in range(2020, 2030):
-                             if str(year) in raw_text:
-                                 extracted_item["exercicio"] = str(year)
-                                 break
-                    
-                    if extracted_item.get("valor") != "NADA CONSTA":
-                         total_geral += self._to_float(extracted_item.get("valor"))
-                    
-                    scraped_data.append(extracted_item)
-                    if i < total_exercicios - 1:
-                        await page.go_back()
-                        await page.wait_for_load_state("networkidle")
-                        await asyncio.sleep(1)
+                is_iframe = await page.locator("iframe#body-iframe").count() > 0
+                target = page.frame_locator("iframe#body-iframe") if is_iframe else page
+                
+                await self._fill_login_form(target, renavam, cpf_cnpj)
+                await target.get_by_title("Continuar").click()
+                
+                # Aguarda um pequeno momento para processamento e checa indisponibilidade precoce
+                await asyncio.sleep(2)
+                body_text = await target.locator("body").inner_text()
+                if "indisponível" in body_text.lower() or "indisponivel" in body_text.lower() or "tente mais tarde" in body_text.lower():
+                    print("[!] [Bradesco-GRT] Portal indisponível. Tentando novamente...")
+                    continue
 
-            return {
-                "status": "success",
-                "total_somado": f"R$ {total_geral:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
-                "detalhes": scraped_data
-            }
+                # Espera lista de exercícios
+                try:
+                    await target.get_by_text("Selecione o exercício").wait_for(timeout=15000)
+                except Exception:
+                    body_text_fallback = await target.locator("body").inner_text()
+                    if "RENAVAM" not in body_text_fallback:
+                        error_msg = await target.locator(".erro_msg").inner_text() if await target.locator(".erro_msg").count() > 0 else "Dados não encontrados."
+                        if "NÃO ENCONTRADO" in error_msg.upper() or "NÃO EXISTEM" in error_msg.upper() or "DADOS NÃO ENCONTRADOS" in error_msg.upper():
+                            return {"status": "success", "total_somado": "R$ 0,00", "detalhes": [], "message": "Nada consta"}
+                        if "indisponível" in body_text_fallback.lower() or "indisponivel" in body_text_fallback.lower() or "tente mais tarde" in body_text_fallback.lower():
+                            print("[!] [Bradesco-GRT] Portal indisponível detectado na exceção. Tentando novamente...")
+                            continue
+                        return {"status": "error", "message": error_msg}
 
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-        finally:
-            await self.close()
+                radios = await target.get_by_title("Marque para selecionar o", exact=False).all()
+                total_exercicios = len(radios)
+                
+                if total_exercicios == 0:
+                    raw_text = await target.locator("body").inner_text()
+                    extracted = self._parse_details(raw_text)
+                    if extracted.get("valor") != "NADA CONSTA":
+                         scraped_data.append(extracted)
+                         total_geral += self._to_float(extracted.get("valor"))
+                    
+                for i in range(total_exercicios):
+                    current_radios = await target.get_by_title("Marque para selecionar o", exact=False).all()
+                    if i < len(current_radios):
+                        # Usando click em vez de check pois aciona navegação/Ajax
+                        await current_radios[i].click()
+                        await self.human_delay(2000, 3000) # Dá tempo para o Ajax/Navegação
+                        try:
+                            await page.wait_for_load_state("networkidle", timeout=10000)
+                        except: pass
+                        
+                        container = target.locator("form[name='debitoVeiculoRJForm']")
+                        if await container.count() == 0:
+                             container = target.locator("body")
+                        
+                        raw_text = await container.inner_text()
+                        extracted_item = self._parse_details(raw_text)
+                        
+                        if extracted_item.get("exercicio") == "NADA CONSTA":
+                            for year in range(2020, 2030):
+                                 if str(year) in raw_text:
+                                     extracted_item["exercicio"] = str(year)
+                                     break
+                        
+                        if extracted_item.get("valor") != "NADA CONSTA":
+                             total_geral += self._to_float(extracted_item.get("valor"))
+                        
+                        scraped_data.append(extracted_item)
+                        if i < total_exercicios - 1:
+                            await page.go_back()
+                            await page.wait_for_load_state("networkidle")
+                            await asyncio.sleep(1)
+
+                return {
+                    "status": "success",
+                    "total_somado": f"R$ {total_geral:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+                    "detalhes": scraped_data
+                }
+
+            except Exception as e:
+                print(f"[!] [Bradesco-GRT] Erro na tentativa {attempt+1}: {e}")
+            finally:
+                await self.close()
+
+        return {"status": "error", "message": "Sistema indisponível no momento. Tente mais tarde. (0131)"}
 
     async def get_fines_data(self, renavam: str, cpf_cnpj: str) -> Dict[str, Any]:
         """Consulta o histórico de Multas de Trânsito (GRM)."""
-        page = await self.init_browser()
-        fines_list = []
-        total_multas = 0.0
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            print(f"[*] [Bradesco-GRM] Iniciando consulta para Renavam: {renavam} (Tentativa {attempt+1})")
+            page = await self.init_browser()
+            fines_list = []
+            total_multas = 0.0
 
-        try:
-            url = "https://www.ib7.bradesco.com.br/ibpfdetranrj/debitoVeiculoRJGrmConsultar.do"
-            await page.goto(url, wait_until="networkidle")
-            
-            is_iframe = await page.locator("iframe#body-iframe").count() > 0
-            target = page.frame_locator("iframe#body-iframe") if is_iframe else page
-            
-            # Login (Multas usa os mesmos campos de Título)
-            await self._fill_login_form(target, renavam, cpf_cnpj)
-            
-            # Seleciona Tipo de Consulta: "Todas" (value 3)
-            # No HTML enviado, o título do rádio de valor 3 é "Marque para selecionar individualizada." (mesmo que o texto seja 'Todas')
-            await target.locator("input[name='grm.idSeqFuncao'][value='3']").check()
-            
-            await target.get_by_title("Continuar").click()
-            time.sleep(3)
-            await page.wait_for_load_state("networkidle")
+            try:
+                url = "https://www.ib7.bradesco.com.br/ibpfdetranrj/debitoVeiculoRJGrmConsultar.do"
+                await page.goto(url, wait_until="networkidle")
+                
+                is_iframe = await page.locator("iframe#body-iframe").count() > 0
+                target = page.frame_locator("iframe#body-iframe") if is_iframe else page
+                
+                # Login (Multas usa os mesmos campos de Título)
+                await self._fill_login_form(target, renavam, cpf_cnpj)
+                
+                # Seleciona Tipo de Consulta: "Todas" (value 3)
+                await target.locator("input[name='grm.idSeqFuncao'][value='3']").check()
+                await target.get_by_title("Continuar").click()
+                
+                await asyncio.sleep(2)
+                body_text = await target.locator("body").inner_text()
+                if "indisponível" in body_text.lower() or "indisponivel" in body_text.lower() or "tente mais tarde" in body_text.lower():
+                    print("[!] [Bradesco-GRM] Portal indisponível. Tentando novamente...")
+                    continue
 
-            # Verifica se há tabela de multas
-            table = target.locator("table.table-tp1")
-            if await table.count() == 0:
-                content = await target.locator("body").inner_text()
-                if "Não foram encontrados" in content:
-                    return {"status": "success", "total_somado": "R$ 0,00", "detalhes": [], "message": "Nenhuma multa encontrada."}
-                return {"status": "error", "message": "Tabela de multas não localizada."}
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=15000)
+                except: pass
 
-            # Extração das linhas da tabela
-            rows = await table.locator("tbody tr").all()
-            for row in rows:
-                cells = await row.locator("td").all_text_contents()
-                if len(cells) >= 6:
-                    auto = cells[0].strip()
-                    placa = cells[1].strip()
-                    data_infracao = cells[2].strip()
-                    valor_str = cells[3].strip()
-                    vencimento = cells[4].strip()
-                    situacao = cells[5].strip()
+                # Verifica se há tabela de multas
+                table = target.locator("table.table-tp1")
+                if await table.count() == 0:
+                    content = await target.locator("body").inner_text()
+                    print(f"[!] [Bradesco-GRM] Body text: {content[:600]}")
+                    if "Não foram encontrados" in content or "Não existem" in content or "NADA CONSTA" in content.upper() or "Nenhum" in content:
+                        return {"status": "success", "total_somado": "R$ 0,00", "detalhes": [], "message": "Nenhuma multa encontrada."}
                     
-                    if valor_str:
-                        total_multas += self._to_float(valor_str)
-                    
-                    fines_list.append({
-                        "auto_infracao": auto,
-                        "placa": placa,
-                        "data_infracao": data_infracao,
-                        "valor": valor_str,
-                        "vencimento": vencimento,
-                        "situacao": situacao
-                    })
+                    if "indisponível" in content.lower() or "indisponivel" in content.lower() or "tente mais tarde" in content.lower():
+                        print("[!] [Bradesco-GRM] Portal indisponível detectado no check de tabela. Tentando novamente...")
+                        continue
+                        
+                    return {"status": "error", "message": "Tabela de multas não localizada."}
 
-            return {
-                "status": "success",
-                "total_somado": f"R$ {total_multas:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
-                "detalhes": fines_list
-            }
+                # Extração das linhas da tabela
+                rows = await table.locator("tbody tr").all()
+                for row in rows:
+                    cells = await row.locator("td").all_text_contents()
+                    if len(cells) >= 6:
+                        auto = cells[0].strip()
+                        placa = cells[1].strip()
+                        data_infracao = cells[2].strip()
+                        valor_str = cells[3].strip()
+                        vencimento = cells[4].strip()
+                        situacao = cells[5].strip()
+                        
+                        if valor_str:
+                            total_multas += self._to_float(valor_str)
+                        
+                        fines_list.append({
+                            "auto_infracao": auto,
+                            "placa": placa,
+                            "data_infracao": data_infracao,
+                            "valor": valor_str,
+                            "vencimento": vencimento,
+                            "situacao": situacao
+                        })
 
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-        finally:
-            await self.close()
+                return {
+                    "status": "success",
+                    "total_somado": f"R$ {total_multas:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+                    "detalhes": fines_list
+                }
+
+            except Exception as e:
+                print(f"[!] [Bradesco-GRM] Erro na tentativa {attempt+1}: {e}")
+            finally:
+                await self.close()
+
+        return {"status": "error", "message": "Sistema indisponível no momento. Tente mais tarde. (0131)"}
 
     async def _fill_login_form(self, target, renavam: str, cpf_cnpj: str):
         """Auxiliar para preencher o formulário comum IPVA/Multas."""
