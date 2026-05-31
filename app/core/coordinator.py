@@ -45,15 +45,33 @@ class QueryCoordinator:
                 return_exceptions=True
             )
             
-            # Extract placa from Bradesco result if possible
-            bradesco_res = results_init[1]
+            # Extract placa from SEFAZ-RJ or Bradesco results if possible
             extracted_placa = None
-            if not isinstance(bradesco_res, Exception) and isinstance(bradesco_res, dict):
-                if bradesco_res.get("status") == "success":
-                    extracted_placa = bradesco_res.get("data", {}).get("placa")
-                    print(f"[+] Placa discovered via Bradesco: {extracted_placa}")
-                else:
-                    print(f"[-] Bradesco failed to provide Placa: {bradesco_res.get('message')}")
+            
+            # 1. Tenta extrair da SEFAZ-RJ (results_init[0])
+            sefaz_res = results_init[0]
+            if not isinstance(sefaz_res, Exception) and isinstance(sefaz_res, dict):
+                if sefaz_res.get("status") == "success":
+                    extracted_placa = sefaz_res.get("data", {}).get("detalhes", {}).get("placa")
+                    if extracted_placa:
+                        print(f"[+] Placa discovered via SEFAZ-RJ: {extracted_placa}")
+            
+            # 2. Tenta extrair do Bradesco Multas (results_init[2]) como fallback
+            if not extracted_placa:
+                grm_res = results_init[2]
+                if not isinstance(grm_res, Exception) and isinstance(grm_res, dict):
+                    if grm_res.get("status") == "success":
+                        details = grm_res.get("detalhes", [])
+                        if details and isinstance(details, list):
+                            for fine in details:
+                                if isinstance(fine, dict) and fine.get("placa"):
+                                    extracted_placa = fine.get("placa")
+                                    print(f"[+] Placa discovered via Bradesco Multas: {extracted_placa}")
+                                    break
+            
+            if not extracted_placa:
+                print("[-] Failed to discover Placa from both SEFAZ-RJ and Bradesco.")
+
             
             # Now run Detran with the (possibly) found placa
             print(f"[*] Running Detran query with Placa: {extracted_placa}")
@@ -71,6 +89,10 @@ class QueryCoordinator:
         for i, res in enumerate(results):
             if isinstance(res, Exception):
                 processed_results.append({"source": sources[i], "status": "error", "message": str(res)})
+            elif isinstance(res, dict):
+                res_copy = res.copy()
+                res_copy["source"] = sources[i]
+                processed_results.append(res_copy)
             else:
                 processed_results.append(res)
 

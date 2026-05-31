@@ -32,6 +32,25 @@ class Normalizer:
         }
 
     @staticmethod
+    def normalize_bradesco_grt(data: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "origem": "Bradesco-GRT",
+            "total_somado": data.get("total_somado", "R$ 0,00"),
+            "debitos": data.get("detalhes", []),
+            "has_debts": len(data.get("detalhes", [])) > 0 and data.get("total_somado") != "R$ 0,00"
+        }
+
+    @staticmethod
+    def normalize_bradesco_grm(data: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "origem": "Bradesco-Multas",
+            "total_somado": data.get("total_somado", "R$ 0,00"),
+            "multas": data.get("detalhes", []),
+            "has_fines": len(data.get("detalhes", [])) > 0 and data.get("total_somado") != "R$ 0,00"
+        }
+
+
+    @staticmethod
     def normalize_dataf5(data: Dict[str, Any]) -> Dict[str, Any]:
         raw = data.get("data", {})
         return {
@@ -90,10 +109,29 @@ class Normalizer:
                 
                 merged_detalhes.append(norm_sefaz)
 
+            elif source == "Bradesco-GRT":
+                norm_grt = Normalizer.normalize_bradesco_grt(res)
+                if norm_grt.get("has_debts"):
+                    merged_consolidado["debitos_ipva"] = True
+                merged_detalhes.append(norm_grt)
+                
+            elif source == "Bradesco-Multas":
+                norm_grm = Normalizer.normalize_bradesco_grm(res)
+                if norm_grm.get("has_fines"):
+                    merged_consolidado["multas_ativas"] = True
+                
+                fines = norm_grm.get("multas", [])
+                if fines and isinstance(fines, list):
+                    first_fine = fines[0]
+                    if isinstance(first_fine, dict):
+                        merged_consolidado["placa"] = merged_consolidado["placa"] or first_fine.get("placa")
+                merged_detalhes.append(norm_grm)
+
             elif source == "Bradesco":
                 norm_bradesco = Normalizer.normalize_bradesco(res)
                 merged_consolidado["proprietario"] = norm_bradesco.get("proprietario") or merged_consolidado["proprietario"]
                 merged_detalhes.append(norm_bradesco)
+
                 
             elif source == "DataF5":
                 norm_dataf5 = Normalizer.normalize_dataf5(res)

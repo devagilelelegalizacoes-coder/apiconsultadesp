@@ -249,9 +249,13 @@ class DetranRJScraper(BaseScraper):
                         if fine_data:
                             clean = {}
                             for k, v in fine_data.items():
-                                ck = k.lower().replace(" ", "_").replace("$", "").replace("valor_original_r", "valor_original").replace("valor_a_ser_pago_r", "valor_pago").strip()
+                                # Normaliza a chave: remove chars inválidos (encoding misto Windows/Linux)
+                                ck = k.encode("ascii", errors="ignore").decode("ascii")
+                                ck = ck.lower().replace(" ", "_").replace("$", "").replace("valor_original_r", "valor_original").replace("valor_a_ser_pago_r", "valor_pago").strip()
                                 while "__" in ck: ck = ck.replace("__", "_")
-                                clean[ck.strip("_")] = v
+                                # Também normaliza o valor (remove prefixo ": \n" que vem do inner_text)
+                                vv = v.strip().lstrip(":\n").strip() if isinstance(v, str) else v
+                                clean[ck.strip("_")] = vv
                             fines.append(clean)
                     
                     return {"status": "success", "data": fines}

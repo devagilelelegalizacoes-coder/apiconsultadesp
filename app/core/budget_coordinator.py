@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 from typing import Dict, Any, List
 from app.scrapers.detran_rj import DetranRJScraper
 from app.scrapers.sefaz_rj import SefazRJScraper
@@ -20,6 +21,7 @@ class BudgetCoordinator:
             "step_4_bradesco_grt": None,
             "step_5_bradesco_multas_optimized": None,
             "step_6_final_verification": None,
+            "step_7_relatorio_decisao": None,
             "errors": []
         }
 
@@ -42,7 +44,8 @@ class BudgetCoordinator:
             v_info = df5_res.get("data", {})
             renavam = v_info.get("Renavam")
             chassi = v_info.get("Chassi")
-            cpf_proprietario = v_info.get("Nº Doc. Proprietário")
+            raw_cpf = v_info.get("CPF/CNPJ") or v_info.get("Nº Doc. Proprietário") or ""
+            cpf_proprietario = "".join(filter(str.isdigit, str(raw_cpf)))
             
             if not renavam:
                 raise Exception("Renavam not found in DataF5 query.")
@@ -140,7 +143,62 @@ class BudgetCoordinator:
 
             # Step 6-Part-2 already handled in parallel above
 
-            # --- STEP 7: CALCULAR RESUMO DE DÉBITOS ---
+            # --- STEP 7: RELATÓRIO PARA TOMADA DE DECISÃO ---
+            print(f"[*] [Budget] Generating Decision Report for {placa}...")
+            
+            cadastro_data = results.get("step_1_detran_cadastro", {}).get("data", {})
+            fines_bradesco = results.get("step_5_bradesco_multas_optimized", {}).get("detalhes", [])
+            
+            # GNV & Inmetro
+            gnv_status = cadastro_data.get("combustivel", "")
+            tem_gnv = "GNV" in str(gnv_status).upper() or "GAS NATURAL" in str(gnv_status).upper()
+            inmetro_regular = False
+            ano_vigente = str(datetime.now().year)
+            if tem_gnv:
+                # Look for inmetro in observacoes
+                obs = str(cadastro_data.get("observacoes", "")).upper()
+                if ano_vigente in obs and ("CSV" in obs or "INMETRO" in obs):
+                    inmetro_regular = True
+            
+            # Intenção / Comunicação de Venda
+            com_venda = cadastro_data.get("comunicacao_venda", "NÃO")
+            int_venda = cadastro_data.get("intencao_venda", "NÃO")
+            precisa_transferencia_ou_cancelamento = "SIM" in com_venda.upper() or "SIM" in str(int_venda).upper()
+            
+            # Gravame / Financiamento
+            gravame = cadastro_data.get("gravame_financeiro", "")
+            restricao_alienacao = cadastro_data.get("restricao_alienacao", "")
+            tem_financiamento = "SIM" in str(gravame).upper() or "ALIENACAO" in str(restricao_alienacao).upper() or "ALIENAÇÃO" in str(restricao_alienacao).upper()
+            
+            # Multas Transitadas em Julgado
+            multas_transitadas = [
+                m for m in fines_bradesco
+                if str(m.get("is_transitado", "")).upper() == "SIM"
+            ]
+            
+            relatorio_decisao = {
+                "gnv": {
+                    "possui": tem_gnv,
+                    "inmetro_ano_vigente_regular": inmetro_regular,
+                    "aviso": "Verificar se a vistoria do Inmetro está feita no ano vigente." if tem_gnv and not inmetro_regular else ("Ok" if tem_gnv else "Não possui GNV")
+                },
+                "venda": {
+                    "comunicacao_venda": com_venda,
+                    "intencao_venda": int_venda,
+                    "acao_necessaria": "Fazer serviço de transferência de propriedade ou cancelar intenção/comunicação de venda." if precisa_transferencia_ou_cancelamento else "Ok"
+                },
+                "financiamento": {
+                    "possui_gravame": tem_financiamento,
+                    "acao_necessaria": "Necessário fazer a inclusão de financiamento no Detran com ou sem a transferência." if tem_financiamento else "Ok"
+                },
+                "multas_transitadas_julgado": {
+                    "quantidade": len(multas_transitadas),
+                    "detalhes": multas_transitadas
+                }
+            }
+            results["step_7_relatorio_decisao"] = relatorio_decisao
+
+            # --- STEP 8: CALCULAR RESUMO DE DÉBITOS ---
             def parse_money(val_str):
                 if not val_str or not isinstance(val_str, str): return 0.0
                 try:
@@ -170,7 +228,7 @@ class BudgetCoordinator:
                 "data_atualizacao": results.get("step_6_final_verification", {}).get("data", {}).get("data_consulta")
             }
 
-            # --- STEP 8: Final persistence ---
+            # --- STEP 9: Final persistence ---
             cache_key = f"budget:{placa}"
             await database.set(cache_key, results, expire=86400) # Save for 24h
             

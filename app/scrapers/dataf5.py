@@ -26,8 +26,8 @@ class DataF5Scraper(BaseScraper):
         await page.get_by_role("textbox", name="Senha").fill(self.password)
         await page.get_by_role("button", name="Acessar Sistema").click()
         
-        # Wait for dashboard to load
-        await page.wait_for_selector("div:nth-child(9) > .glass-panel", timeout=15000)
+        # Wait for dashboard to load — use a stable text-based selector
+        await page.wait_for_selector(".glass-panel", timeout=25000)
         print("[+] [DataF5] Login successful.")
 
     async def get_vehicle_data(self, placa: str) -> Dict[str, Any]:
@@ -38,111 +38,65 @@ class DataF5Scraper(BaseScraper):
         try:
             await self.login(page)
             
-            # Locate the 9th card (Consulta Placa Completa)
-            print("[*] [DataF5] Navigating to plate query card...")
-            input_selector = "div:nth-child(9) > .glass-panel .form-control"
-            await page.wait_for_selector(input_selector)
+            # Fill the plate input
+            plate_input = page.locator('xpath=/html/body/div[2]/div[5]/div[6]/div/form//input[@name="placa"]')
+            await plate_input.wait_for(state="visible", timeout=15000)
+            await plate_input.focus()
+            await plate_input.fill(placa)
             
-            # Apply the specific interaction (4 ArrowLeft presses)
-            # This is likely to bypass some UI masking/formatting
-            await page.focus(input_selector)
-            for _ in range(4):
-                await page.keyboard.press("ArrowLeft")
-                await asyncio.sleep(0.1)
-                
-            await page.fill(input_selector, placa)
-            
-            # Click Consultar
+            # Click Consultar button
             print("[*] [DataF5] Submitting query...")
-            # The user's code used get_by_text("Consultar Gerando PDFs...")
-            # But browser exploration showed just "Consultar" might work or be the actual text.
-            # We'll try to be flexible.
-            try:
-                await page.click("div:nth-child(9) > .glass-panel .btn-accent", timeout=5000)
-            except:
-                await page.get_by_text("Consultar").first.click()
-
-            # Wait for Result Modal or error
+            submit_btn = page.locator('xpath=/html/body/div[2]/div[5]/div[6]/div/form/div/button')
+            await submit_btn.click()
+            
+            # Wait for results or error using a polling loop
             print("[*] [DataF5] Waiting for results...")
-            try:
-                await page.wait_for_selector("#placaDataModal.show .modal-body, .toast-message, .alert-danger", timeout=20000)
-                
-                # Check for "não encontrada"
+            found = False
+            for _ in range(25):
                 body_text = await page.locator("body").inner_text()
-                if "NÃO ENCONTRADA" in body_text.upper() or "NÃO LOCALIZADA" in body_text.upper():
+                body_upper = body_text.upper()
+                if "NÃO ENCONTRADA" in body_upper or "NÃO LOCALIZADA" in body_upper:
                     print("[-] [DataF5] Plate not found.")
                     return {"source": "DataF5", "placa": placa, "status": "success", "data": {}, "message": "Placa não encontrada no sistema."}
                 
-                await page.wait_for_selector("#placaDataModal.show .modal-body", timeout=5000)
-            except:
-                # One last check for plate not found
-                body_text = await page.locator("body").inner_text()
-                if "NÃO ENCONTRADA" in body_text.upper():
-                    return {"source": "DataF5", "placa": placa, "status": "success", "data": {}, "message": "Placa não encontrada no sistema."}
+                has_results = await page.locator('strong:has-text("Placa:")').is_visible()
+                if has_results:
+                    found = True
+                    break
+                await asyncio.sleep(1)
+            
+            if not found:
                 raise Exception("Timeout waiting for results or identifying error.")
             
-            # Extract Data
-            print("[*] [DataF5] Extracting data from modal...")
-            modal_body = page.locator("#placaDataModal .modal-body")
+            # Extract Data using the card-body key-value parser
+            print("[*] [DataF5] Extracting data from card-body...")
             
-            # We'll use a dictionary to map labels to keys
-            data = {}
-            labels_to_extract = [
-                "Placa", "Renavam", "Chassi", "Marca/Modelo", "Cor", 
-                "Ano Fabricação", "Ano Modelo", "Ano Fabricação/Modelo", 
-                "Combustível", "Categoria", "Espécie", "Tipo Veículo", 
-                "Nº Motor", "Origem", "Tipo Carroceria", "Cilindrada", 
-                "Potência", "Peso Bruto", "Nº Eixos", "Capacidade Passageiros", 
-                "Capacidade Carga", "VIA DO CRV", "Data CRV", "Motivo Emissão", 
-                "CRLV Digital", "CRV Digital", "Pendência Emissão", 
-                "Existe Comunicação Venda", "Logradouro", "Número", 
-                "Complemento", "Cidade", "CEP", "Município Registro", "UF", 
-                "Estado", "Nome Possuidor", "Tipo Doc. Possuidor", 
-                "Nº Doc. Possuidor", "Tipo Doc. Proprietário", 
-                "Nº Doc. Proprietário", "Restrição 1", "Restrição 2", 
-                "Restrição 3", "Restrição 4"
-            ]
-            
-            all_text = await modal_body.inner_text()
-            lines = [l.strip() for l in all_text.split("\n") if l.strip()]
-            
-            # Robust parser for Label-Value pairs
-            for i, line in enumerate(lines):
-                # Clean line from snapshot noise
-                line = line.replace(" [level=6]", "").strip()
+            data = await page.evaluate("""() => {
+                const result = {};
+                // Find the card body that contains Placa:
+                const cardBody = Array.from(document.querySelectorAll('.card-body')).find(el => el.textContent.includes('Placa:'));
+                if (!cardBody) return result;
                 
-                for label in labels_to_extract:
-                    lbl_lower = label.lower()
-                    line_lower = line.lower()
-                    
-                    if lbl_lower in line_lower:
-                        # Case 1: Label occurs in the line (e.g., "Placa: KWH6E62" or "Placa KWH6E62")
-                        # Try to find where label ends
-                        lbl_pos = line_lower.find(lbl_lower)
-                        after_lbl = line[lbl_pos + len(label):].strip()
-                        
-                        # Remove leading colons or spaces
-                        if after_lbl.startswith(":"):
-                            after_lbl = after_lbl[1:].strip()
-                            
-                        # If after_lbl is not empty, it's likely the value
-                        if after_lbl and len(after_lbl) > 1:
-                            data[label] = after_lbl
-                        elif i + 1 < len(lines):
-                            # Case 2: Value is in the NEXT line
-                            if label not in data:
-                                next_line = lines[i+1].strip()
-                                # Simple heuristic to avoid taking another label as value
-                                if not any(next_line.lower().startswith(l.lower()) for l in labels_to_extract[:10]):
-                                    data[label] = next_line
+                const cols = cardBody.querySelectorAll('.col-md-6');
+                cols.forEach(col => {
+                    const strong = col.querySelector('strong');
+                    const span = col.querySelector('span');
+                    if (strong && span) {
+                        const key = strong.textContent.replace(':', '').trim();
+                        const val = span.textContent.trim();
+                        result[key] = val;
+                    }
+                });
+                return result;
+            }""")
             
-            # Post-processing for combined fields
+            # Post-processing for combined fields / normalization
             if "Ano Fabricação" not in data and "Ano Fabricação/Modelo" in data:
                  val = data["Ano Fabricação/Modelo"]
                  if "/" in val:
-                     parts = val.split("/")
-                     data["Ano Fabricação"] = parts[0].strip()
-                     data["Ano Modelo"] = parts[1].strip()
+                      parts = val.split("/")
+                      data["Ano Fabricação"] = parts[0].strip()
+                      data["Ano Modelo"] = parts[1].strip()
             
             # Normalize Renavam (11 digits, zero padded)
             if "Renavam" in data and data["Renavam"]:
