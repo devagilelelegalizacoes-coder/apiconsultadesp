@@ -28,31 +28,18 @@ class SefazRJScraper(BaseScraper):
                 if not captcha_box:
                     raise Exception("Could not find captcha box")
 
-                # Try to resolve captcha without using solver first
-                # Sometimes the page resolves it automatically
-                print(f"[*] [SEFAZ] Waiting for automatic captcha resolution (Attempt {attempt})...")
-                await self.human_delay(2000, 3000)  # Wait in case it auto-resolves
+                captcha_bytes = await page.screenshot(clip=captcha_box)
+                captcha_b64 = base64.b64encode(captcha_bytes).decode('utf-8')
 
-                # Check if captcha field is already filled
-                captcha_value = await page.input_value("#captcha") if await page.query_selector("#captcha") else ""
+                print(f"[*] [SEFAZ] Solving Image Captcha (Attempt {attempt})...")
+                captcha_text = await solver.solve_image_captcha(captcha_b64)
 
-                if captcha_value:
-                    print(f"[+] [SEFAZ] Captcha auto-resolved! Saving credits...")
-                else:
-                    # Manual solve via API
-                    print(f"[*] [SEFAZ] Auto-resolution failed, using solver (Attempt {attempt})...")
-                    captcha_bytes = await page.screenshot(clip=captcha_box)
-                    captcha_b64 = base64.b64encode(captcha_bytes).decode('utf-8')
+                if not captcha_text:
+                    print(f"[-] [SEFAZ] Captcha solving failed on attempt {attempt}.")
+                    last_error = "Captcha solving service failed"
+                    continue
 
-                    captcha_text = await solver.solve_image_captcha(captcha_b64)
-
-                    if not captcha_text:
-                        print(f"[-] [SEFAZ] Captcha solving failed on attempt {attempt}.")
-                        last_error = "Captcha solving service failed"
-                        continue
-
-                    await page.fill("#captcha", captcha_text)
-
+                await page.fill("#captcha", captcha_text)
                 await self.human_delay(1000, 2000)
                 await page.click(".btn-consultar")
                 
