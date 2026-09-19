@@ -27,7 +27,7 @@ class BradescoScraper(BaseScraper):
         max_retries = 2
         for attempt in range(max_retries + 1):
             print(f"[*] [Bradesco-GRT] Iniciando consulta para Renavam: {renavam} (Tentativa {attempt+1})")
-            page = await self.init_browser()
+            page = await self.init_browser(use_stealth=False)
             scraped_data = []
             total_geral = 0.0
 
@@ -122,7 +122,7 @@ class BradescoScraper(BaseScraper):
         max_retries = 2
         for attempt in range(max_retries + 1):
             print(f"[*] [Bradesco-GRM] Iniciando consulta para Renavam: {renavam} (Tentativa {attempt+1})")
-            page = await self.init_browser()
+            page = await self.init_browser(use_stealth=False)
             fines_list = []
             total_multas = 0.0
 
@@ -202,25 +202,36 @@ class BradescoScraper(BaseScraper):
         return {"status": "error", "message": "Sistema indisponível no momento. Tente mais tarde. (0131)"}
 
     async def _fill_login_form(self, target, renavam: str, cpf_cnpj: str):
-        """Auxiliar para preencher o formulário comum IPVA/Multas."""
-        await target.get_by_title("Informe o número do Renavam.").fill(renavam)
+        """Auxiliar para preencher o formulário comum IPVA/Multas.
+        Tenta ambos os layouts: com title attributes e com fallback genérico."""
         clean_doc = "".join(filter(str.isdigit, cpf_cnpj))
-        
-        if len(clean_doc) <= 11:
-            await target.get_by_title("Informe o número do CPF.").check()
-            if len(clean_doc) == 11:
-                await target.get_by_title("Informar o primeiro campo do CPF com três posições.").fill(clean_doc[0:3])
-                await target.get_by_title("Informar o segundo campo do CPF com três posições.").fill(clean_doc[3:6])
-                await target.get_by_title("Informar o terceiro campo do CPF com três posições.").fill(clean_doc[6:9])
-                await target.get_by_title("Informar o quarto campo do CPF com três posições.").fill(clean_doc[9:11])
-        else:
-            await target.get_by_title("Informe o número do CNPJ.").check()
-            # Título pode variar levemente entre GRT e GRM, usamos seletor mais genérico se falhar
-            try:
-                await target.get_by_title("Informar o primeiro campo do CNPJ", exact=False).first.fill(clean_doc[0:12])
-                await target.get_by_title("Informar o quinto campo do CNPJ", exact=False).first.fill(clean_doc[12:14])
-            except:
-                pass
+
+        try:
+            # Layout original com title attributes
+            await target.get_by_title("Informe o número do Renavam.").fill(renavam)
+
+            if len(clean_doc) <= 11:
+                await target.get_by_title("Informe o número do CPF.").check()
+                if len(clean_doc) == 11:
+                    await target.get_by_title("Informar o primeiro campo do CPF com três posições.").fill(clean_doc[0:3])
+                    await target.get_by_title("Informar o segundo campo do CPF com três posições.").fill(clean_doc[3:6])
+                    await target.get_by_title("Informar o terceiro campo do CPF com três posições.").fill(clean_doc[6:9])
+                    await target.get_by_title("Informar o quarto campo do CPF com três posições.").fill(clean_doc[9:11])
+            else:
+                await target.get_by_title("Informe o número do CNPJ.").check()
+                try:
+                    await target.get_by_title("Informar o primeiro campo do CNPJ", exact=False).first.fill(clean_doc[0:12])
+                    await target.get_by_title("Informar o quinto campo do CNPJ", exact=False).first.fill(clean_doc[12:14])
+                except:
+                    pass
+        except Exception as e:
+            print(f"[!] [Bradesco] Layout com title attributes falhou: {e}")
+            print("[*] [Bradesco] Tentando layout alternativo...")
+            # Fallback: tentar encontrar inputs diretamente
+            inputs = await target.locator("input[type='text']").all()
+            if len(inputs) > 0:
+                await inputs[0].fill(renavam)
+                print("[+] [Bradesco] Preencheu Renavam via fallback")
 
     def _to_float(self, val_str: str) -> float:
         """Converte string monetária (1.234,56) para float."""
