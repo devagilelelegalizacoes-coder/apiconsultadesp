@@ -1,0 +1,41 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+venv/
+ENV/
+env/
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+desktop.ini
+Thumbs.db
+
+# Logs and debug
+*.log
+audit.log
+detran_rj_multas_debug_*
+
+# Data
+*.csv
+*.json
+!app/config/*.json
+
+# Temporary scripts and tests
+test_scraper.py
+consultas*.py
+imageToSave.jpeg
+
+# AI assistant data
+.gemini/
+
+# System files
+.DS_Store
+*.bak
