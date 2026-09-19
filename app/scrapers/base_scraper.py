@@ -120,6 +120,36 @@ class BaseScraper:
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
         await self.human_delay(300, 800)
 
+    async def try_auto_resolve_captcha(self, page: Page, wait_ms: int = 5000):
+        """
+        Tenta resolver reCAPTCHA automaticamente sem usar créditos.
+        Simula interação humana (mouse hover, delay) e aguarda resolução automática.
+        Retorna True se resolveu ou não há captcha, False se precisa usar solver.
+        """
+        try:
+            print("[*] [Captcha] Tentando auto-resolução (sem créditos)...")
+
+            # Simular interação humana
+            await self.simulate_interaction(page)
+
+            # Aguardar a página processar
+            await self.human_delay(wait_ms // 2, wait_ms)
+
+            # Verificar se há ainda indicação de captcha pendente
+            body_text = await page.locator("body").inner_text()
+
+            # Se conseguiu avancar além do captcha, está OK
+            if "recaptcha" not in body_text.lower() or await page.query_selector("body.captcha-resolved"):
+                print("[+] [Captcha] Auto-resolvido! Economia de créditos :)")
+                return True
+
+            print("[-] [Captcha] Auto-resolução falhou, será necessário usar solver")
+            return False
+
+        except Exception as e:
+            print(f"[!] [Captcha] Erro ao tentar auto-resolução: {e}")
+            return False  # Tenta resolver com solver
+
     async def close(self):
         """Closes browser and stops Playwright correctly."""
         try:
