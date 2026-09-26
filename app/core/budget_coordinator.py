@@ -5,6 +5,7 @@ from app.scrapers.detran_rj import DetranRJScraper
 from app.scrapers.sefaz_rj import SefazRJScraper
 from app.scrapers.sefaz import SefazDiscoveryScraper
 from app.scrapers.bradesco import BradescoScraper
+from app.scrapers.divida_ativa_rj import DividaAtivaRJScraper
 from app.infrastructure.supabase_db import db as database
 from app.core.business_rules import BusinessRuleAnalyzer
 
@@ -23,6 +24,7 @@ class BudgetCoordinator:
             "step_4_bradesco_grt": None,
             "step_5_bradesco_multas_optimized": None,
             "step_6_final_verification": None,
+            "step_6b_divida_ativa": None,
             "step_7_relatorio_decisao": None,
             "errors": []
         }
@@ -119,6 +121,16 @@ class BudgetCoordinator:
                 task_mapping.append("step_6_sefaz_ipva")
             else:
                 results["step_6_sefaz_ipva"] = {"status": "success", "message": "Sem débitos na SEFAZ (Nada Consta)"}
+
+            # Step 6B: Dívida Ativa RJ (se detectado no nada consta)
+            has_divida_ativa = "SIM" in str(nc_debitos.get("DIVIDA_ATIVA", "")).upper() or \
+                               "SIM" in str(nc_debitos.get("DÍVIDA_ATIVA", "")).upper()
+
+            if has_divida_ativa:
+                bradesco_tasks.append(DividaAtivaRJScraper().get_divida_ativa(working_cpf))
+                task_mapping.append("step_6b_divida_ativa")
+            else:
+                results["step_6b_divida_ativa"] = {"status": "success", "message": "Sem dívida ativa (Nada Consta)"}
             
             # Run all in parallel
             parallel_results = await asyncio.gather(*bradesco_tasks, return_exceptions=True)
