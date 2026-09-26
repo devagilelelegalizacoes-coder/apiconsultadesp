@@ -33,122 +33,48 @@ Obs: Se há comunicação de venda, usa CPF descoberto no Step 3
 ### Step 6-Part-2: SEFAZ IPVA
 Executado se: Há IPVA ou dívida ativa no nada consta
 
-### Step 6B: Dívida Ativa RJ
-Executado se: Há Dívida Ativa no nada consta
-- Consulta portal consultadividaativa.rj.gov.br
-- Extrai número, data, valor e origem dos débitos
-- Roda em paralelo com Step 6-Part-2
+### Step 6B: Dívida Ativa RJ (PGE-RJ)
+Executado se: o nada consta aponta Dívida Ativa
+- Portal: www.consultadividaativa.rj.gov.br (consulta por RENAVAM, sem captcha)
+- Extrai certidão, situação, natureza, principal, multa, mora, honorários e total
+- O total entra em `resumo_orcamento.total_divida_ativa`
+- Importante: IPVA antigo inscrito em Dívida Ativa não aparece na SEFAZ ("não foram encontrados débitos")
+
+### Multas consolidadas
+- O status de cada multa vem do DETRAN (`tipo_status`); o valor atualizado vem do Bradesco
+- Se o Bradesco falhar, usa as multas do DETRAN com valor original (sem juros) e gera aviso
 
 ## Regras de Negócio Implementadas
 
-### 1. GNV + INMETRO (Vistoria Obrigatória)
-**Condição:** Veículo com combustível GNV
+| Regra | Fonte | Resultado |
+|---|---|---|
+| GNV sem vistoria INMETRO no ano vigente | cadastro `combustivel` + `observacoes` | Impedimento |
+| Cilindrada zerada e licenciamento < 2018 | cadastro `cilindrada` (card "lotação / potência / cilindrada") + `licenciamento` | Impedimento |
+| Inclusão pendente | `mensagem_detran` / `observacoes` contém "INCLUS" | Impedimento (licenciamento não liberado) |
+| DETRAN manda "PROVIDENCIAR" serviço (ex.: baixa de gravame) | `mensagem_detran` | Impedimento |
+| Comunicação/intenção de venda | `mensagem_detran` / `observacoes` | Ação: transferir para o CPF da comunicação ou cancelar; GRT/multas consultados com esse CPF |
+| Gravame / alienação fiduciária | cadastro `has_gravame` | Ação: inclusão/baixa de financiamento |
+| Dívida Ativa | nada consta + PGE-RJ | Ação: quitar (valor no orçamento); se a PGE falhar, aviso para verificar manualmente |
 
-**Validação:** 
-- Verifica se INMETRO consta em observações
-- Valida se o ano vigente está presente (CSV/INMETRO + ano atual)
+### Multas por tipo de serviço (`multas_por_servico`)
+- **licenciamento**: só multas transitadas em julgado
+- **transferencia_ou_vistoria**: transitadas + penalidade (`tipo_status` "Multa ...") + RENAINF (mesmo sendo autuação)
 
-**Impedimento:** Se GNV detectado mas INMETRO não está validado no ano vigente
-```
-Motivo: "Necessário fazer vistoria INMETRO no ano vigente"
-```
-
-### 2. Cilindrada Zerada + Ano Fabricação < 2018
-**Condição:** 
-- Cilindrada = 0 ou vazia
-- Ano de fabricação < 2018
-
-**Impedimento:** Requer serviço com vistoria
-```
-Motivo: "Necessário fazer serviço com vistoria (acerto dados/transferência/2via) 
-         ou abrir processo administrativo"
-```
-
-### 3. Comunicação/Intenção de Venda
-**Condição:** Campo `comunicacao_venda` = "SIM" no DETRAN
-
-**Ação Necessária:**
-- Fazer transferência de propriedade para novo CPF/nome
-- OU cancelar a comunicação de venda
-- GRT deve ser consultado com CPF da comunicação de venda
-
-### 4. Dívida Ativa
-**Condição:** Campo `DIVIDA_ATIVA` = "SIM" no nada consta apreendido
-
-**Ação Automática:**
-- Step 6B executa consulta automática em consultadividaativa.rj.gov.br
-- Extrai débitos e valores de dívida ativa
-- Resultado integrado no relatório final
-
-**Se Scraper Falhar:**
-- Sistema retorna aviso para consulta manual no portal
-- CPF/CNPJ fornecido para consulta manual se necessário
-
-### 5. Gravame/Financiamento
-**Condição:** Campo `has_gravame` = "SIM" no cadastro DETRAN
-
-**Ação Necessária:**
-- Fazer inclusão de financiamento no DETRAN
-- Pode ser feito com ou sem transferência de propriedade
-
-### 6. Inclusão Restrição
-**Condição:** Restrições contêm "INCLUSÃO"
-
-**Impedimento:** Impede licenciamento direto
-```
-Motivo: "Inclusão impede licenciamento"
-```
-
-### 7. Multas por Tipo de Serviço
-Diferentes serviços exigem pagamento de multas diferentes:
-
-#### Licenciamento
-- Pagar apenas: **Multas Transitadas em Julgado**
-
-#### Transferência / Serviços com Vistoria
-- Pagar: 
-  - Multas Transitadas em Julgado
-  - Multas marcadas como Penalidade
-  - Multas RENAINF (mesmo que autuação)
-
-#### Padrão
-- Todas as multas (para referência)
-
-## Resposta da Análise
-
-### Formato da Resposta - Step 7 (Relatório)
+## Formato do Step 7 (`step_7_relatorio_decisao`)
 
 ```json
 {
-  "analise_negocio": {
-    "timestamp": "2026-09-26T...",
-    "status": "LIBERADO|IMPEDIDO",
-    "pode_regularizar": true/false,
-    "impedimentos": [
-      {
-        "categoria": "GNV",
-        "motivo": "Necessário fazer vistoria INMETRO no ano vigente"
-      }
-    ],
-    "avisos": [
-      "Dívida Ativa detectada - Consultar: consultadividaativa.rj.gov.br"
-    ],
-    "acoes_necessarias": [
-      {
-        "tipo": "Comunicação de Venda",
-        "acao": "Fazer transferência para novo CPF/nome ou cancelar comunicação"
-      }
-    ],
-    "multas_analise": {
-      "tipo_servico": "default|licenciamento|transferencia|vistoria",
-      "total_multas": 3,
-      "observacao": "Pagar conforme tipo de serviço"
-    }
-  },
+  "status": "LIBERADO | IMPEDIDO",
   "pode_regularizar": false,
-  "status": "IMPEDIDO",
-  "impedimentos": [...],
-  "mensagem_ao_cliente": "Existe impedimento para regularização do veículo. Solicite análise e orçamento ao despachante."
+  "impedimentos": [{"categoria": "Pendência DETRAN", "motivo": "..."}],
+  "acoes_necessarias": [{"tipo": "Dívida Ativa", "acao": "Quitar débitos inscritos em Dívida Ativa (R$ 13.351,56)"}],
+  "avisos": ["..."],
+  "multas_por_servico": {
+    "licenciamento": {"quantidade": 2, "total": "R$ 325,39", "autos": ["..."]},
+    "transferencia_ou_vistoria": {"quantidade": 6, "total": "R$ 846,03", "autos": ["..."]},
+    "sem_classificacao": []
+  },
+  "mensagem_ao_cliente": "Existe impedimento para regularização do veículo. Solicite ao despachante a análise e o orçamento."
 }
 ```
 

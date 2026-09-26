@@ -2,6 +2,13 @@ from app.scrapers.base_scraper import BaseScraper
 from app.infrastructure.captcha_solver import solver
 from typing import Dict, Any
 import asyncio
+import re
+import unicodedata
+
+
+def _sem_acento(s: str) -> str:
+    return unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode().upper()
+
 
 class DetranRJScraper(BaseScraper):
     async def get_vehicle_data(self, renavam: str, cpf: str, placa: str | None = None) -> Dict[str, Any]:
@@ -150,9 +157,15 @@ class DetranRJScraper(BaseScraper):
                             data[field.replace("crlv-", "")] = val.strip() if val else ""
                         except: data[field.replace("crlv-", "")] = ""
                     
-                    data["has_gravame"] = "SIM" if "ALIENAÇÃO FIDUCIÁ" in retorno_text.upper() or "GRAVAME" in retorno_text.upper() else "NÃO"
-                    obs = (data.get("observacoes") or "").upper()
-                    data["comunicacao_venda"] = "SIM" if "COMUNICAÇÃO DE VENDA" in obs or "INTENÇÃO DE VENDA" in obs else "NÃO"
+                    primeira_linha = re.split(r"<|\n", retorno_text, maxsplit=1)[0].strip()
+                    data["mensagem_detran"] = primeira_linha if len(primeira_linha) > 15 and re.search(r"[A-Za-z]{4}", primeira_linha) else ""
+                    # Card shows "LOTAÇÃO / POTÊNCIA / CILINDRADA", e.g. "5 / 153 / 2000"
+                    lpc = re.search(r"^\s*(\d{1,3})\s*/\s*(\d{1,4})\s*/\s*(\d{1,5})\s*$", retorno_text, re.MULTILINE)
+                    if lpc:
+                        data["lotacao"], data["potencia"], data["cilindrada"] = lpc.groups()
+                    texto = _sem_acento(f"{retorno_text} {data.get('observacoes') or ''}")
+                    data["has_gravame"] = "SIM" if "ALIENACAO FIDUCIA" in texto or "GRAVAME" in texto or "RESERVA DE DOMINIO" in texto else "NÃO"
+                    data["comunicacao_venda"] = "SIM" if "COMUNICACAO DE VENDA" in texto or "INTENCAO DE VENDA" in texto else "NÃO"
                     
                     return {"status": "success", "data": data}
                 

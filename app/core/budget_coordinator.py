@@ -127,7 +127,7 @@ class BudgetCoordinator:
                                "SIM" in str(nc_debitos.get("DÍVIDA_ATIVA", "")).upper()
 
             if has_divida_ativa:
-                bradesco_tasks.append(DividaAtivaRJScraper().get_divida_ativa(working_cpf))
+                bradesco_tasks.append(DividaAtivaRJScraper().get_divida_ativa(renavam))
                 task_mapping.append("step_6b_divida_ativa")
             else:
                 results["step_6b_divida_ativa"] = {"status": "success", "message": "Sem dívida ativa (Nada Consta)"}
@@ -140,61 +140,61 @@ class BudgetCoordinator:
                 results[task_name] = res if not isinstance(res, Exception) else {"status": "error", "message": str(res)}
             
             grm_res = results.get("step_5_bradesco_multas_optimized", {"status": "error"})
-            
-            # Optimization for Step 5: Merge status from Detran
-            fines_bradesco = grm_res.get("detalhes", []) if grm_res.get("status") == "success" else []
+            bradesco_ok = grm_res.get("status") == "success"
             fines_detran = results["step_2_detran_multas"].get("data", []) if results["step_2_detran_multas"].get("status") == "success" else []
-            
-            for b_fine in fines_bradesco:
-                auto = b_fine.get("auto_infracao")
-                # Try match by Auto
-                match = next((df for df in fines_detran if df.get("auto_de_infração") == auto or df.get("auto_infracao") == auto), None)
-                if match:
-                    tipo_status = (match.get("tipo_status") or "").upper()
-                    b_fine["is_transitado"] = match.get("is_transitado") or ("SIM" if "TRANSITADO" in tipo_status else "NÃO")
-                    b_fine["is_renainf"] = match.get("is_renainf") or ("SIM" if "RENAINF" in tipo_status else "NÃO")
-                else:
-                    b_fine["is_transitado"] = "N/A"
-                    b_fine["is_renainf"] = "N/A"
 
-            # Step 6-Part-2 already handled in parallel above
+            def detran_auto(df):
+                # DETRAN header "Auto de Infração" is slugified without accents -> "auto_de_infrao"
+                return df.get("auto_de_infrao") or df.get("auto_de_infração") or df.get("auto_infracao")
+
+            def status_flags(df):
+                tipo_status = (df.get("tipo_status") or "").upper()
+                renainf = (df.get("auto_de_renainf") or "").strip()
+                return {
+                    "tipo_status_detran": df.get("tipo_status"),
+                    "is_transitado": "SIM" if "TRANSITADO" in tipo_status else "NÃO",
+                    "is_penalidade": "SIM" if tipo_status.startswith("MULTA") or "PENALIDADE" in tipo_status else "NÃO",
+                    "is_renainf": "SIM" if "RENAINF" in tipo_status or renainf not in ("", "-") else "NÃO",
+                }
+
+            if bradesco_ok:
+                fines = grm_res.get("detalhes", [])
+                for b_fine in fines:
+                    match = next((df for df in fines_detran if b_fine.get("auto_infracao") and detran_auto(df) == b_fine["auto_infracao"]), None)
+                    if match:
+                        b_fine.update(status_flags(match))
+                    else:
+                        b_fine["is_transitado"] = b_fine["is_penalidade"] = b_fine["is_renainf"] = "N/A"
+            else:
+                fines = [{
+                    "auto_infracao": detran_auto(df),
+                    "placa": df.get("placa_relacionada"),
+                    "data_infracao": df.get("data_da_infrao"),
+                    "valor": df.get("valor_original"),
+                    "fonte": "DETRAN (valor original, sem juros)",
+                    **status_flags(df),
+                } for df in fines_detran if (df.get("status_de_pagamento") or "").upper() != "PAGO"]
+            results["multas_consolidadas"] = fines
 
             # --- STEP 7: RELATÓRIO PARA TOMADA DE DECISÃO ---
             print(f"[*] [Budget] Generating Decision Report for {placa}...")
 
             cadastro_data = results.get("step_1_detran_cadastro", {}).get("data", {})
             nada_consta_data = results.get("step_6_final_verification", {}).get("data", {})
-            fines_bradesco = results.get("step_5_bradesco_multas_optimized", {}).get("detalhes", [])
 
-            # Aplicar regras de negócio
-            business_analysis = BusinessRuleAnalyzer.generate_business_analysis(
-                cadastro_data=cadastro_data,
-                nada_consta_data=nada_consta_data,
-                fines_list=fines_bradesco,
-                service_type="default"
+            results["step_7_relatorio_decisao"] = BusinessRuleAnalyzer.generate_business_analysis(
+                cadastro=cadastro_data,
+                nada_consta=nada_consta_data,
+                fines=fines,
+                divida_ativa=results.get("step_6b_divida_ativa"),
+                owner_discovery=results.get("step_3_owner_discovery"),
             )
-
-            # Multas Transitadas em Julgado
-            multas_transitadas = [
-                m for m in fines_bradesco
-                if str(m.get("is_transitado", "")).upper() == "SIM"
-            ]
-
-            relatorio_decisao = {
-                "analise_negocio": business_analysis,
-                "pode_regularizar": business_analysis["pode_regularizar"],
-                "status": business_analysis["status"],
-                "impedimentos": business_analysis["impedimentos"],
-                "avisos": business_analysis["avisos"],
-                "acoes_necessarias": business_analysis["acoes_necessarias"],
-                "multas_transitadas_julgado": {
-                    "quantidade": len(multas_transitadas),
-                    "detalhes": multas_transitadas,
-                    "observacao": "Pagar conforme tipo de serviço"
-                },
-                "mensagem_ao_cliente": "Existe impedimento para regularização do veículo. Solicite análise e orçamento ao despachante." if not business_analysis["pode_regularizar"] else "Veículo apto para regularização"
-            }
-            results["step_7_relatorio_decisao"] = relatorio_decisao
+            avisos = results["step_7_relatorio_decisao"]["avisos"]
+            if not bradesco_ok and fines:
+                avisos.append("Consulta de multas no Bradesco falhou: valores das multas são os originais do DETRAN, sem juros")
+            for key, nome in (("step_4_bradesco_grt", "GRT/Licenciamento (Bradesco)"), ("step_6_sefaz_ipva", "IPVA (SEFAZ)")):
+                if (results.get(key) or {}).get("status") == "error":
+                    avisos.append(f"Consulta {nome} falhou: total do orçamento pode estar incompleto")
 
             # --- STEP 8: CALCULAR RESUMO DE DÉBITOS ---
             def parse_money(val_str):
@@ -206,7 +206,10 @@ class BudgetCoordinator:
                 except: return 0.0
             
             total_grt = parse_money(results.get("step_4_bradesco_grt", {}).get("total_somado", "0,00"))
-            total_grm = parse_money(results.get("step_5_bradesco_multas_optimized", {}).get("total_somado", "0,00"))
+            if bradesco_ok:
+                total_grm = parse_money(grm_res.get("total_somado", "0,00"))
+            else:
+                total_grm = sum(parse_money(f.get("valor")) for f in fines)
             
             # Sefaz Summation
             total_sefaz = 0.0
@@ -216,12 +219,16 @@ class BudgetCoordinator:
                 for s_debt in sefaz_ipva_list:
                     total_sefaz += parse_money(s_debt.get("total_a_pagar", "0,00"))
             
-            valor_total_debitos = total_grt + total_grm + total_sefaz
-            
+            da_res = results.get("step_6b_divida_ativa") or {}
+            total_divida_ativa = parse_money(da_res.get("total_divida", "0,00")) if da_res.get("status") == "success" else 0.0
+
+            valor_total_debitos = total_grt + total_grm + total_sefaz + total_divida_ativa
+
             results["resumo_orcamento"] = {
                 "total_grt_ipva": f"R$ {total_grt:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
                 "total_multas": f"R$ {total_grm:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
-                "total_sefaz_divida": f"R$ {total_sefaz:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+                "total_sefaz_ipva": f"R$ {total_sefaz:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+                "total_divida_ativa": f"R$ {total_divida_ativa:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
                 "valor_total_debitos": f"R$ {valor_total_debitos:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
                 "data_atualizacao": results.get("step_6_final_verification", {}).get("data", {}).get("data_consulta")
             }

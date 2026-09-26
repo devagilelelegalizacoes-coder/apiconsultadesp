@@ -49,8 +49,10 @@ class BradescoScraper(BaseScraper):
                     continue
 
                 # Espera lista de exercícios
+                lista_ok = False
                 try:
                     await target.get_by_text("Selecione o exercício").wait_for(timeout=15000)
+                    lista_ok = True
                 except Exception:
                     body_text_fallback = await target.locator("body").inner_text()
                     if "RENAVAM" not in body_text_fallback:
@@ -71,6 +73,9 @@ class BradescoScraper(BaseScraper):
                     if extracted.get("valor") != "NADA CONSTA":
                          scraped_data.append(extracted)
                          total_geral += self._to_float(extracted.get("valor"))
+                    elif not lista_ok:
+                        print(f"[!] [Bradesco-GRT] Página não reconhecida: {raw_text[:200]!r}. Tentando novamente...")
+                        continue
                     
                 for i in range(total_exercicios):
                     current_radios = await target.get_by_title("Marque para selecionar o", exact=False).all()
@@ -152,6 +157,10 @@ class BradescoScraper(BaseScraper):
 
                 # Verifica se há tabela de multas
                 table = target.locator("table.table-tp1")
+                try:
+                    await table.first.wait_for(state="attached", timeout=20000)
+                except Exception:
+                    pass
                 if await table.count() == 0:
                     content = await target.locator("body").inner_text()
                     print(f"[!] [Bradesco-GRM] Body text: {content[:600]}")
@@ -161,8 +170,9 @@ class BradescoScraper(BaseScraper):
                     if "indisponível" in content.lower() or "indisponivel" in content.lower() or "tente mais tarde" in content.lower():
                         print("[!] [Bradesco-GRM] Portal indisponível detectado no check de tabela. Tentando novamente...")
                         continue
-                        
-                    return {"status": "error", "message": "Tabela de multas não localizada."}
+
+                    print("[!] [Bradesco-GRM] Resposta não reconhecida. Tentando novamente...")
+                    continue
 
                 # Extração das linhas da tabela
                 rows = await table.locator("tbody tr").all()
