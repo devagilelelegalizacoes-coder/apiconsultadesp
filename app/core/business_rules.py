@@ -119,6 +119,7 @@ class BusinessRuleAnalyzer:
                     "acao": "Transferir para o CPF/nome da comunicação de venda ou cancelar a comunicação"}
             if owner_discovery and owner_discovery.get("status") == "success":
                 acao["cpf_comunicacao_venda"] = owner_discovery.get("cpf")
+                acao["nome_comunicacao_venda"] = owner_discovery.get("nome")
             acoes.append(acao)
 
         if _sim(cadastro.get("has_gravame")):

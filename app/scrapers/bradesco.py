@@ -1,8 +1,10 @@
 import asyncio
+import base64
 import re
 from typing import Dict, Any, List
 from playwright.async_api import Page
 from app.scrapers.base_scraper import BaseScraper
+from app.infrastructure.captcha_solver import solver
 import time 
 
 class BradescoScraper(BaseScraper):
@@ -56,8 +58,11 @@ class BradescoScraper(BaseScraper):
                 except Exception:
                     body_text_fallback = await target.locator("body").inner_text()
                     if "RENAVAM" not in body_text_fallback:
-                        error_msg = await target.locator(".erro_msg").inner_text() if await target.locator(".erro_msg").count() > 0 else "Dados não encontrados."
-                        if "NÃO ENCONTRADO" in error_msg.upper() or "NÃO EXISTEM" in error_msg.upper() or "DADOS NÃO ENCONTRADOS" in error_msg.upper():
+                        error_msg = " ".join(t.strip() for t in await target.locator(".erro_msg").all_inner_texts() if t.strip())
+                        if not error_msg:
+                            print(f"[!] [Bradesco-GRT] Página não reconhecida: {body_text_fallback[:200]!r}. Tentando novamente...")
+                            continue
+                        if "NÃO ENCONTRADO" in error_msg.upper() or "NÃO EXISTEM" in error_msg.upper():
                             return {"status": "success", "total_somado": "R$ 0,00", "detalhes": [], "message": "Nada consta"}
                         if "indisponível" in body_text_fallback.lower() or "indisponivel" in body_text_fallback.lower() or "tente mais tarde" in body_text_fallback.lower():
                             print("[!] [Bradesco-GRT] Portal indisponível detectado na exceção. Tentando novamente...")
@@ -242,6 +247,21 @@ class BradescoScraper(BaseScraper):
             if len(inputs) > 0:
                 await inputs[0].fill(renavam)
                 print("[+] [Bradesco] Preencheu Renavam via fallback")
+
+        await self._solve_form_captcha(target)
+
+    async def _solve_form_captcha(self, target):
+        """Resolve o jcaptcha de imagem quando o portal o exibe (nem sempre aparece)."""
+        img = target.locator("#captchaDisp-UICaptcha-captchaImage")
+        if await img.count() == 0 or not await img.is_visible():
+            return
+        await img.evaluate("i => i.complete || new Promise(r => { i.onload = r; i.onerror = r; })")
+        png = await img.screenshot()
+        texto = await solver.solve_image_captcha(base64.b64encode(png).decode())
+        if not texto:
+            raise Exception("Falha ao resolver captcha de imagem do Bradesco")
+        print(f"[*] [Bradesco] Captcha de imagem resolvido: {texto}")
+        await target.locator("#jcaptcha_response").fill(texto)
 
     def _to_float(self, val_str: str) -> float:
         """Converte string monetária (1.234,56) para float."""

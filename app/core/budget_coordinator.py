@@ -81,11 +81,16 @@ class BudgetCoordinator:
             
             if com_venda:
                 print(f"[*] [Budget] Communication of Sale detected. Discovering actual owner CPF via SEFAZ...")
-                sefaz_cpf = await sefaz_disc.discovery_owner_document(renavam)
-                if sefaz_cpf:
-                    results["step_3_owner_discovery"] = {"status": "success", "cpf": sefaz_cpf}
-                    working_cpf = sefaz_cpf
-                    print(f"[+] [Budget] New owner CPF discovered: {working_cpf}")
+                comprador = await sefaz_disc.discovery_owner_document(renavam)
+                if comprador:
+                    results["step_3_owner_discovery"] = {
+                        "status": "success",
+                        "cpf": comprador["cpf"],
+                        "nome": comprador["nome"],
+                        "divergente_do_informado": comprador["cpf"] != cpf_proprietario,
+                    }
+                    working_cpf = comprador["cpf"]
+                    print(f"[+] [Budget] New owner CPF discovered: {working_cpf} ({comprador['nome']})")
                 else:
                     results["step_3_owner_discovery"] = {"status": "error", "message": "Failed to discover new CPF"}
 
@@ -157,23 +162,27 @@ class BudgetCoordinator:
                     "is_renainf": "SIM" if "RENAINF" in tipo_status or renainf not in ("", "-") else "NÃO",
                 }
 
-            if bradesco_ok:
-                fines = grm_res.get("detalhes", [])
-                for b_fine in fines:
-                    match = next((df for df in fines_detran if b_fine.get("auto_infracao") and detran_auto(df) == b_fine["auto_infracao"]), None)
-                    if match:
-                        b_fine.update(status_flags(match))
-                    else:
-                        b_fine["is_transitado"] = b_fine["is_penalidade"] = b_fine["is_renainf"] = "N/A"
-            else:
-                fines = [{
-                    "auto_infracao": detran_auto(df),
-                    "placa": df.get("placa_relacionada"),
-                    "data_infracao": df.get("data_da_infrao"),
-                    "valor": df.get("valor_original"),
-                    "fonte": "DETRAN (valor original, sem juros)",
-                    **status_flags(df),
-                } for df in fines_detran if (df.get("status_de_pagamento") or "").upper() != "PAGO"]
+            fines = grm_res.get("detalhes", []) if bradesco_ok else []
+            for b_fine in fines:
+                b_fine["fonte"] = "Bradesco"
+                match = next((df for df in fines_detran if b_fine.get("auto_infracao") and detran_auto(df) == b_fine["auto_infracao"]), None)
+                if match:
+                    b_fine.update(status_flags(match))
+                else:
+                    b_fine["is_transitado"] = b_fine["is_penalidade"] = b_fine["is_renainf"] = "N/A"
+
+            # Fines only on DETRAN (e.g. RENAINF penalties not payable via Bradesco GRM) still count for transfer
+            no_bradesco = {f.get("auto_infracao") for f in fines}
+            fines_so_detran = [{
+                "auto_infracao": detran_auto(df),
+                "placa": df.get("placa_relacionada"),
+                "data_infracao": df.get("data_da_infrao"),
+                "valor": df.get("valor_original"),
+                "fonte": "DETRAN (valor original, sem juros)",
+                **status_flags(df),
+            } for df in fines_detran
+                if detran_auto(df) not in no_bradesco and (df.get("status_de_pagamento") or "").upper() != "PAGO"]
+            fines = fines + fines_so_detran
             results["multas_consolidadas"] = fines
 
             # --- STEP 7: RELATÓRIO PARA TOMADA DE DECISÃO ---
@@ -190,6 +199,9 @@ class BudgetCoordinator:
                 owner_discovery=results.get("step_3_owner_discovery"),
             )
             avisos = results["step_7_relatorio_decisao"]["avisos"]
+            if com_venda and (results.get("step_3_owner_discovery") or {}).get("status") != "success":
+                avisos.append("Comunicação de venda: CPF do comprador não obtido na SEFAZ; GRT e multas Bradesco "
+                              "foram consultados com o CPF informado e podem estar incompletos")
             if not bradesco_ok and fines:
                 avisos.append("Consulta de multas no Bradesco falhou: valores das multas são os originais do DETRAN, sem juros")
             for key, nome in (("step_4_bradesco_grt", "GRT/Licenciamento (Bradesco)"), ("step_6_sefaz_ipva", "IPVA (SEFAZ)")):
@@ -206,10 +218,7 @@ class BudgetCoordinator:
                 except: return 0.0
             
             total_grt = parse_money(results.get("step_4_bradesco_grt", {}).get("total_somado", "0,00"))
-            if bradesco_ok:
-                total_grm = parse_money(grm_res.get("total_somado", "0,00"))
-            else:
-                total_grm = sum(parse_money(f.get("valor")) for f in fines)
+            total_grm = sum(parse_money(f.get("valor")) for f in fines)
             
             # Sefaz Summation
             total_sefaz = 0.0
