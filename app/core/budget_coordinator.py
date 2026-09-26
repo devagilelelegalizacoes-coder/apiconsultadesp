@@ -6,6 +6,7 @@ from app.scrapers.sefaz_rj import SefazRJScraper
 from app.scrapers.sefaz import SefazDiscoveryScraper
 from app.scrapers.bradesco import BradescoScraper
 from app.infrastructure.supabase_db import db as database
+from app.core.business_rules import BusinessRuleAnalyzer
 
 class BudgetCoordinator:
     async def run_budget_query(self, placa: str, renavam: str, cpf: str, chassi: str | None = None, user: str = "system") -> Dict[str, Any]:
@@ -145,53 +146,38 @@ class BudgetCoordinator:
 
             # --- STEP 7: RELATÓRIO PARA TOMADA DE DECISÃO ---
             print(f"[*] [Budget] Generating Decision Report for {placa}...")
-            
-            cadastro_data = results.get("step_1_detran_cadastro", {}).get("data", {})
-            fines_bradesco = results.get("step_5_bradesco_multas_optimized", {}).get("detalhes", [])
-            
-            # GNV & Inmetro
-            gnv_status = cadastro_data.get("combustivel", "")
-            tem_gnv = "GNV" in str(gnv_status).upper() or "GAS NATURAL" in str(gnv_status).upper()
-            inmetro_regular = False
-            ano_vigente = str(datetime.now().year)
-            if tem_gnv:
-                # Look for inmetro in observacoes
-                obs = str(cadastro_data.get("observacoes", "")).upper()
-                if ano_vigente in obs and ("CSV" in obs or "INMETRO" in obs):
-                    inmetro_regular = True
-            
-            # Comunicação de Venda
-            com_venda = cadastro_data.get("comunicacao_venda", "NÃO")
-            precisa_transferencia_ou_cancelamento = "SIM" in com_venda.upper()
 
-            # Gravame / Financiamento (consultar has_gravame do cadastro)
-            tem_gravame = cadastro_data.get("has_gravame", "NÃO")
-            tem_financiamento = "SIM" in str(tem_gravame).upper()
-            
+            cadastro_data = results.get("step_1_detran_cadastro", {}).get("data", {})
+            nada_consta_data = results.get("step_6_final_verification", {}).get("data", {})
+            fines_bradesco = results.get("step_5_bradesco_multas_optimized", {}).get("detalhes", [])
+
+            # Aplicar regras de negócio
+            business_analysis = BusinessRuleAnalyzer.generate_business_analysis(
+                cadastro_data=cadastro_data,
+                nada_consta_data=nada_consta_data,
+                fines_list=fines_bradesco,
+                service_type="default"
+            )
+
             # Multas Transitadas em Julgado
             multas_transitadas = [
                 m for m in fines_bradesco
                 if str(m.get("is_transitado", "")).upper() == "SIM"
             ]
-            
+
             relatorio_decisao = {
-                "gnv": {
-                    "possui": tem_gnv,
-                    "inmetro_ano_vigente_regular": inmetro_regular,
-                    "aviso": "Verificar se a vistoria do Inmetro está feita no ano vigente." if tem_gnv and not inmetro_regular else ("Ok" if tem_gnv else "Não possui GNV")
-                },
-                "venda": {
-                    "comunicacao_venda": com_venda,
-                    "acao_necessaria": "Fazer serviço de transferência de propriedade ou cancelar comunicação de venda." if precisa_transferencia_ou_cancelamento else "Ok"
-                },
-                "financiamento": {
-                    "possui_gravame": tem_financiamento,
-                    "acao_necessaria": "Necessário fazer a inclusão de financiamento no Detran com ou sem a transferência." if tem_financiamento else "Ok"
-                },
+                "analise_negocio": business_analysis,
+                "pode_regularizar": business_analysis["pode_regularizar"],
+                "status": business_analysis["status"],
+                "impedimentos": business_analysis["impedimentos"],
+                "avisos": business_analysis["avisos"],
+                "acoes_necessarias": business_analysis["acoes_necessarias"],
                 "multas_transitadas_julgado": {
                     "quantidade": len(multas_transitadas),
-                    "detalhes": multas_transitadas
-                }
+                    "detalhes": multas_transitadas,
+                    "observacao": "Pagar conforme tipo de serviço"
+                },
+                "mensagem_ao_cliente": "Existe impedimento para regularização do veículo. Solicite análise e orçamento ao despachante." if not business_analysis["pode_regularizar"] else "Veículo apto para regularização"
             }
             results["step_7_relatorio_decisao"] = relatorio_decisao
 
