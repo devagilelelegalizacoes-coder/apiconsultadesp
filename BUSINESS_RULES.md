@@ -30,8 +30,14 @@ Executado se: `comunicacao_venda == "SIM"` no cadastro DETRAN
 
 Obs: Se há comunicação de venda, usa CPF descoberto no Step 3
 
-### Step 6-Part-2: SEFAZ IPVA/Dívida Ativa
+### Step 6-Part-2: SEFAZ IPVA
 Executado se: Há IPVA ou dívida ativa no nada consta
+
+### Step 6B: Dívida Ativa RJ
+Executado se: Há Dívida Ativa no nada consta
+- Consulta portal consultadividaativa.rj.gov.br
+- Extrai número, data, valor e origem dos débitos
+- Roda em paralelo com Step 6-Part-2
 
 ## Regras de Negócio Implementadas
 
@@ -69,8 +75,14 @@ Motivo: "Necessário fazer serviço com vistoria (acerto dados/transferência/2v
 ### 4. Dívida Ativa
 **Condição:** Campo `DIVIDA_ATIVA` = "SIM" no nada consta apreendido
 
-**Ação Necessária:**
-- Consultar em: consultadividaativa.rj.gov.br/consultadebitosdividaativarj/servlet/StartCISPage
+**Ação Automática:**
+- Step 6B executa consulta automática em consultadividaativa.rj.gov.br
+- Extrai débitos e valores de dívida ativa
+- Resultado integrado no relatório final
+
+**Se Scraper Falhar:**
+- Sistema retorna aviso para consulta manual no portal
+- CPF/CNPJ fornecido para consulta manual se necessário
 
 ### 5. Gravame/Financiamento
 **Condição:** Campo `has_gravame` = "SIM" no cadastro DETRAN
