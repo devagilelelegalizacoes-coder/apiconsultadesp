@@ -43,32 +43,35 @@ class BudgetCoordinator:
             if not cpf_proprietario:
                 raise Exception("CPF/CNPJ is required.")
 
-            # --- STEP 1, 2 & 6: DETRAN Parallel Queries ---
-            # NOTE: We use separate instances to avoid concurrency issues with self.browser.close()
-            print(f"[*] [Budget] Starting Step 1, 2 & 6 (DETRAN RJ)...")
+            # --- STEP 0: NADA CONSTA APREENDIDO (Decision Initializer) ---
+            # This step must run first to determine which other queries to skip
             doc_type = "cpf" if len(cpf_proprietario) == 11 else "cnpj"
+
+            if chassi:
+                print(f"[*] [Budget] Step 0: Starting Nada Consta Apreendido (Decision Point)...")
+                nada_consta_result = await DetranRJScraper().get_nada_consta_apreendido_data(
+                    placa, chassi, renavam, doc_type, cpf_proprietario
+                )
+                results["step_6_final_verification"] = nada_consta_result
+            else:
+                print(f"[*] [Budget] Step 0: Skipping Nada Consta (Chassi nao informado)...")
+                results["step_6_final_verification"] = {"status": "skipped", "message": "Chassi nao informado."}
+
+            # --- STEP 1 & 2: DETRAN Cadastro & Multas ---
+            # NOTE: We use separate instances to avoid concurrency issues with self.browser.close()
+            print(f"[*] [Budget] Starting Step 1 & 2 (DETRAN RJ Cadastro & Multas)...")
             detran_tasks = [
                 DetranRJScraper().get_cadastro_data(placa),
                 DetranRJScraper().get_multas_detalhadas(renavam, cpf_proprietario),
             ]
-            if chassi:
-                detran_tasks.append(
-                    DetranRJScraper().get_nada_consta_apreendido_data(placa, chassi, renavam, doc_type, cpf_proprietario)
-                )
 
             detran_raw = await asyncio.gather(*detran_tasks, return_exceptions=True)
-            
+
             # Step 1: Cadastro (Gravame, Caixa, GNV, Com.Venda)
             results["step_1_detran_cadastro"] = detran_raw[0] if not isinstance(detran_raw[0], Exception) else {"status": "error", "message": str(detran_raw[0])}
-            
+
             # Step 2: Detailed Multas
             results["step_2_detran_multas"] = detran_raw[1] if not isinstance(detran_raw[1], Exception) else {"status": "error", "message": str(detran_raw[1])}
-            
-            # Step 6 (Part 1): Nada Consta Apreendido (requires Chassi)
-            if not chassi:
-                results["step_6_final_verification"] = {"status": "skipped", "message": "Chassi nao informado."}
-            else:
-                results["step_6_final_verification"] = detran_raw[2] if not isinstance(detran_raw[2], Exception) else {"status": "error", "message": str(detran_raw[2])}
 
             # --- STEP 3: SEFAZ (Only if Com. Venda detected) ---
             com_venda = results["step_1_detran_cadastro"].get("data", {}).get("comunicacao_venda") == "SIM" if results["step_1_detran_cadastro"].get("status") == "success" else False
