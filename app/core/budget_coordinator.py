@@ -1,4 +1,5 @@
 import asyncio
+import unicodedata
 from datetime import datetime
 from typing import Dict, Any, List
 from app.scrapers.detran_rj import DetranRJScraper
@@ -45,29 +46,28 @@ class BudgetCoordinator:
             if not cpf_proprietario:
                 raise Exception("CPF/CNPJ is required.")
 
-            # --- STEP 0: NADA CONSTA APREENDIDO (Decision Initializer) ---
-            # This step must run first to determine which other queries to skip
-            doc_type = "cpf" if len(cpf_proprietario) == 11 else "cnpj"
-
-            if chassi:
-                print(f"[*] [Budget] Step 0: Starting Nada Consta Apreendido (Decision Point)...")
-                nada_consta_result = await DetranRJScraper().get_nada_consta_apreendido_data(
-                    placa, chassi, renavam, doc_type, cpf_proprietario
-                )
-                results["step_6_final_verification"] = nada_consta_result
-            else:
-                print(f"[*] [Budget] Step 0: Skipping Nada Consta (Chassi nao informado)...")
-                results["step_6_final_verification"] = {"status": "skipped", "message": "Chassi nao informado."}
-
-            # --- STEP 1 & 2: DETRAN Cadastro & Multas ---
+            # --- STEP 0, 1 & 2: Nada Consta Apreendido + DETRAN Cadastro & Multas (in parallel) ---
+            # Nada Consta decides which debt sources (GRT, SEFAZ, Dívida Ativa) need to be queried
             # NOTE: We use separate instances to avoid concurrency issues with self.browser.close()
-            print(f"[*] [Budget] Starting Step 1 & 2 (DETRAN RJ Cadastro & Multas)...")
+            doc_type = "cpf" if len(cpf_proprietario) == 11 else "cnpj"
             detran_tasks = [
                 DetranRJScraper().get_cadastro_data(placa),
                 DetranRJScraper().get_multas_detalhadas(renavam, cpf_proprietario),
             ]
+            if chassi:
+                print(f"[*] [Budget] Starting Step 0, 1 & 2 (Nada Consta Apreendido + DETRAN Cadastro & Multas)...")
+                detran_tasks.append(DetranRJScraper().get_nada_consta_apreendido_data(
+                    placa, chassi, renavam, doc_type, cpf_proprietario
+                ))
+            else:
+                print(f"[*] [Budget] Step 0: Skipping Nada Consta (Chassi nao informado)...")
+                print(f"[*] [Budget] Starting Step 1 & 2 (DETRAN RJ Cadastro & Multas)...")
+                results["step_6_final_verification"] = {"status": "skipped", "message": "Chassi nao informado."}
 
             detran_raw = await asyncio.gather(*detran_tasks, return_exceptions=True)
+
+            if chassi:
+                results["step_6_final_verification"] = detran_raw[2] if not isinstance(detran_raw[2], Exception) else {"status": "error", "message": str(detran_raw[2])}
 
             # Step 1: Cadastro (Gravame, Caixa, GNV, Com.Venda)
             results["step_1_detran_cadastro"] = detran_raw[0] if not isinstance(detran_raw[0], Exception) else {"status": "error", "message": str(detran_raw[0])}
@@ -97,14 +97,22 @@ class BudgetCoordinator:
             # --- STEP 4, 5 & 6-Part-2: Bradesco (GRT & Multas) and SEFAZ (IPVA/DívAtiva) ---
             print(f"[*] [Budget] Starting Step 4, 5 & SEFAZ with CPF: {working_cpf}")
             
-            # Smart Skip Check from Nada Consta
-            nc_debitos = results["step_6_final_verification"].get("data", {}).get("debitos", {})
-            has_ipva_grt = "SIM" in str(nc_debitos.get("IPVA", "")).upper() or \
-                           "SIM" in str(nc_debitos.get("TAXA_DE_LICENCIAMENTO_ANUAL", "")).upper() or \
-                           "SIM" in str(nc_debitos.get("LICENCIAMENTO_ATRASADO", "")).upper()
-            
-            has_divida = "SIM" in str(nc_debitos.get("DIVIDA_ATIVA", "")).upper() or \
-                         "SIM" in str(nc_debitos.get("DÍVIDA_ATIVA", "")).upper() or has_ipva_grt
+            # Smart Skip Check from Nada Consta: each debt source is queried only when its item is "SIM".
+            # Without a confirmed Nada Consta (no chassi, or it failed) query everything.
+            # Multas are always queried: Nada Consta omits fines still in autuação/recurso.
+            nc_res = results["step_6_final_verification"] or {}
+            nc_debitos = (nc_res.get("data") or {}).get("debitos") or {}
+            nc_confirmado = nc_res.get("status") == "success" and bool(nc_debitos)
+            if not nc_confirmado:
+                print("[*] [Budget] Nada Consta indisponivel: consultando GRT, SEFAZ e Divida Ativa diretamente.")
+
+            def nc_sim(*keys):
+                # Keys come from the DETRAN labels, with or without accents (e.g. DÍVIDA_ATIVA)
+                sem_acento = {unicodedata.normalize("NFKD", k).encode("ascii", "ignore").decode(): v for k, v in nc_debitos.items()}
+                return not nc_confirmado or any("SIM" in str(sem_acento.get(k, "")).upper() for k in keys)
+
+            has_ipva_grt = nc_sim("TAXA_DE_LICENCIAMENTO_ANUAL", "TAXA_DE_EMISSAO_DE_CRLV", "LICENCIAMENTO_ATRASADO")
+            has_divida = nc_sim("IPVA")
 
             bradesco_tasks = []
             task_mapping = [] # To keep track of what results go where
@@ -120,7 +128,7 @@ class BudgetCoordinator:
             bradesco_tasks.append(BradescoScraper().get_fines_data(renavam, working_cpf))
             task_mapping.append("step_5_bradesco_multas_optimized")
 
-            # Step 6 Part 2: SEFAZ (IPVA/Dívida Ativa)
+            # Step 6 Part 2: SEFAZ (IPVA)
             if has_divida:
                 bradesco_tasks.append(SefazRJScraper().get_vehicle_data(renavam))
                 task_mapping.append("step_6_sefaz_ipva")
@@ -128,8 +136,7 @@ class BudgetCoordinator:
                 results["step_6_sefaz_ipva"] = {"status": "success", "message": "Sem débitos na SEFAZ (Nada Consta)"}
 
             # Step 6B: Dívida Ativa RJ (se detectado no nada consta)
-            has_divida_ativa = "SIM" in str(nc_debitos.get("DIVIDA_ATIVA", "")).upper() or \
-                               "SIM" in str(nc_debitos.get("DÍVIDA_ATIVA", "")).upper()
+            has_divida_ativa = nc_sim("DIVIDA_ATIVA")
 
             if has_divida_ativa:
                 bradesco_tasks.append(DividaAtivaRJScraper().get_divida_ativa(renavam))
@@ -143,7 +150,23 @@ class BudgetCoordinator:
             for i, task_name in enumerate(task_mapping):
                 res = parallel_results[i]
                 results[task_name] = res if not isinstance(res, Exception) else {"status": "error", "message": str(res)}
-            
+
+            # A debt source can't silently fail: retry each failed one once more, sequentially
+            retry_calls = {
+                "step_4_bradesco_grt": lambda: BradescoScraper().get_grt_debts(renavam, working_cpf),
+                "step_5_bradesco_multas_optimized": lambda: BradescoScraper().get_fines_data(renavam, working_cpf),
+                "step_6_sefaz_ipva": lambda: SefazRJScraper().get_vehicle_data(renavam),
+                "step_6b_divida_ativa": lambda: DividaAtivaRJScraper().get_divida_ativa(renavam),
+            }
+            for task_name in task_mapping:
+                if (results[task_name] or {}).get("status") != "error":
+                    continue
+                print(f"[!] [Budget] {task_name} falhou, repetindo consulta...")
+                try:
+                    results[task_name] = await retry_calls[task_name]()
+                except Exception as e:
+                    results[task_name] = {"status": "error", "message": str(e)}
+
             grm_res = results.get("step_5_bradesco_multas_optimized", {"status": "error"})
             bradesco_ok = grm_res.get("status") == "success"
             fines_detran = results["step_2_detran_multas"].get("data", []) if results["step_2_detran_multas"].get("status") == "success" else []
@@ -204,7 +227,8 @@ class BudgetCoordinator:
                               "foram consultados com o CPF informado e podem estar incompletos")
             if not bradesco_ok and fines:
                 avisos.append("Consulta de multas no Bradesco falhou: valores das multas são os originais do DETRAN, sem juros")
-            for key, nome in (("step_4_bradesco_grt", "GRT/Licenciamento (Bradesco)"), ("step_6_sefaz_ipva", "IPVA (SEFAZ)")):
+            for key, nome in (("step_4_bradesco_grt", "GRT/Licenciamento (Bradesco)"), ("step_6_sefaz_ipva", "IPVA (SEFAZ)"),
+                              ("step_6b_divida_ativa", "Dívida Ativa (PGE-RJ)")):
                 if (results.get(key) or {}).get("status") == "error":
                     avisos.append(f"Consulta {nome} falhou: total do orçamento pode estar incompleto")
 

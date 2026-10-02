@@ -98,7 +98,7 @@ class DividaAtivaRJScraper(BaseScraper):
                 if not rows:
                     text = await self._visible_text(page)
                     low = text.lower()
-                    if any(k in low for k in ("não foram encontrad", "nao foram encontrad", "não existe", "nenhum débito", "não há débito", "não constam")):
+                    if any(k in low for k in ("não foram encontrad", "nao foram encontrad", "não existe", "nenhum débito", "não há débito", "não constam", "não inscrito em dívida ativa")):
                         return {
                             "source": "DividaAtivaRJ", "renavam": renavam, "status": "success",
                             "tem_divida": False, "debitos": [], "total_divida": _fmt(0),
