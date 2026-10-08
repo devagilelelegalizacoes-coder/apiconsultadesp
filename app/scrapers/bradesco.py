@@ -3,9 +3,10 @@ import base64
 import re
 from typing import Dict, Any, List
 from playwright.async_api import Page
-from app.scrapers.base_scraper import BaseScraper
+import os
+from app.scrapers.base_scraper import BaseScraper, normalize_browser
 from app.infrastructure.captcha_solver import solver
-import time 
+import time
 
 class BradescoScraper(BaseScraper):
     """
@@ -14,7 +15,19 @@ class BradescoScraper(BaseScraper):
     1. GRT - Licenciamento Anual (Débitos Anuais)
     2. GRM - Multas de Trânsito (Histórico de Infrações)
     Realiza a soma total em ambos os casos.
+
+    O portal apresenta erros no Chromium/Chrome, então o Firefox é o navegador
+    principal. A ordem das tentativas é configurável por BRADESCO_BROWSERS
+    (ex.: "firefox,chromium"): a tentativa N usa o navegador N da lista e,
+    se houver mais tentativas que navegadores, a lista é repetida.
     """
+    default_browser = "firefox"
+
+    def _browser_for_attempt(self, attempt: int) -> str:
+        raw = os.getenv("BRADESCO_BROWSERS", "firefox,chromium")
+        order = [normalize_browser(b, default="") for b in raw.split(",")]
+        order = [b for b in order if b] or ["firefox"]
+        return order[attempt % len(order)]
 
     async def get_vehicle_data(self, renavam: str, cpf_cnpj: str) -> Dict[str, Any]:
         """
@@ -28,7 +41,8 @@ class BradescoScraper(BaseScraper):
         """Consulta débitos de IPVA/GRT (Licenciamento Anual)."""
         max_retries = 2
         for attempt in range(max_retries + 1):
-            print(f"[*] [Bradesco-GRT] Iniciando consulta para Renavam: {renavam} (Tentativa {attempt+1})")
+            self.browser_type = self._browser_for_attempt(attempt)
+            print(f"[*] [Bradesco-GRT] Iniciando consulta para Renavam: {renavam} (Tentativa {attempt+1}, navegador: {self.browser_type})")
             page = await self.init_browser(use_stealth=False)
             scraped_data = []
             total_geral = 0.0
@@ -131,7 +145,8 @@ class BradescoScraper(BaseScraper):
         """Consulta o histórico de Multas de Trânsito (GRM)."""
         max_retries = 2
         for attempt in range(max_retries + 1):
-            print(f"[*] [Bradesco-GRM] Iniciando consulta para Renavam: {renavam} (Tentativa {attempt+1})")
+            self.browser_type = self._browser_for_attempt(attempt)
+            print(f"[*] [Bradesco-GRM] Iniciando consulta para Renavam: {renavam} (Tentativa {attempt+1}, navegador: {self.browser_type})")
             page = await self.init_browser(use_stealth=False)
             fines_list = []
             total_multas = 0.0

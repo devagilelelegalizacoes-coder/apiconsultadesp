@@ -14,8 +14,29 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+SUPPORTED_BROWSERS = ("chromium", "firefox")
+
+CHROMIUM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+FIREFOX_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
+
+
+def normalize_browser(name: Optional[str], default: str = "chromium") -> str:
+    """Normalizes a browser name (accepts 'chrome'/'google' as chromium)."""
+    name = (name or "").strip().lower()
+    if name in ("chrome", "google", "google-chrome"):
+        name = "chromium"
+    return name if name in SUPPORTED_BROWSERS else default
+
+
 class BaseScraper:
-    def __init__(self, use_proxy: bool = True):
+    # Subclasses can override (e.g. Bradesco -> firefox). The env var BROWSER
+    # sets the global default; the constructor argument wins over everything.
+    default_browser: Optional[str] = None
+
+    def __init__(self, use_proxy: bool = True, browser_type: Optional[str] = None):
+        self.browser_type = normalize_browser(
+            browser_type or self.default_browser or os.getenv("BROWSER")
+        )
         self.use_proxy = use_proxy
         self.proxy_server = os.getenv("PROXY_SERVER")
         self.proxy_user = os.getenv("PROXY_USER")
@@ -43,32 +64,41 @@ class BaseScraper:
         # Determina o modo headless: True se em produção/Linux, False se configurado explicitamente
         headless_env = os.getenv("HEADLESS", "true").lower() == "true"
         
-        self.browser = await self.playwright.chromium.launch(
-            headless=headless_env,
-            proxy=proxy,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--ozone-platform=headless",
-                "--disable-software-rasterizer"
-            ]
-        )
-        
-        # TLS/JA3 Impersonation via User-Agent and specific headers
-        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        
+        is_firefox = self.browser_type == "firefox"
+        print(f"[*] [BaseScraper] Launching {self.browser_type} (headless={headless_env})")
+
+        if is_firefox:
+            # Chromium flags are invalid for Firefox; it needs no sandbox flags.
+            self.browser = await self.playwright.firefox.launch(
+                headless=headless_env,
+                proxy=proxy,
+            )
+            user_agent = FIREFOX_USER_AGENT
+        else:
+            self.browser = await self.playwright.chromium.launch(
+                headless=headless_env,
+                proxy=proxy,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--ozone-platform=headless",
+                    "--disable-software-rasterizer"
+                ]
+            )
+            user_agent = CHROMIUM_USER_AGENT
+
         self.context = await self.browser.new_context(
             user_agent=user_agent,
             viewport={'width': 1920, 'height': 1080},
             device_scale_factor=1,
         )
-        
-        # Apply stealth plugin
+
+        # Apply stealth plugin (it targets Chromium only, so skip it on Firefox)
         page = await self.context.new_page()
-        if use_stealth:
+        if use_stealth and not is_firefox:
             try:
                 await stealth_async(page)
             except Exception as e:
