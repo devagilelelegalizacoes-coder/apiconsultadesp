@@ -20,7 +20,7 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install -r requirements.txt
 
-# Install Chromium and Firefox (Bradesco portal works better on Firefox)
+# Install Chromium (default) and Firefox (optional, via BROWSER/BRADESCO_BROWSERS)
 RUN playwright install --with-deps chromium firefox
 
 # Copy the rest of the application code

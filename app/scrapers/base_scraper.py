@@ -16,7 +16,47 @@ load_dotenv()
 
 SUPPORTED_BROWSERS = ("chromium", "firefox")
 
-CHROMIUM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+def chromium_user_agent(version: str) -> str:
+    """User-Agent coerente com a versão real do Chromium e com o sistema.
+
+    Um UA com versão diferente da que o navegador informa nos Client Hints
+    (navigator.userAgentData / Sec-CH-UA) é um sinal clássico de automação.
+    """
+    major = (version or "131").split(".")[0]
+    platform = "Windows NT 10.0; Win64; x64" if sys.platform == "win32" else "X11; Linux x86_64"
+    return f"Mozilla/5.0 ({platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
+
+
+# Corrige o que o modo headless ainda expõe mesmo com o headless novo. Cada
+# ajuste só age quando o vazamento existe, para não alterar o modo visível.
+CHROMIUM_EVASIONS_JS = r"""
+(() => {
+  const uad = navigator.userAgentData;
+  if (uad && uad.brands.some(b => /Headless/i.test(b.brand))) {
+    const fix = list => list.map(b => /Headless/i.test(b.brand) ? {brand: 'Google Chrome', version: b.version} : b);
+    const brands = fix(uad.brands);
+    const proxy = new Proxy(uad, {
+      get(target, prop) {
+        if (prop === 'brands') return brands;
+        if (prop === 'getHighEntropyValues') {
+          return hints => target.getHighEntropyValues(hints).then(v => {
+            if (v.brands) v.brands = fix(v.brands);
+            if (v.fullVersionList) v.fullVersionList = fix(v.fullVersionList);
+            return v;
+          });
+        }
+        const value = Reflect.get(target, prop, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    Object.defineProperty(Navigator.prototype, 'userAgentData', {get: () => proxy, configurable: true});
+  }
+  if (window.Notification && Notification.permission === 'denied') {
+    Object.defineProperty(Notification, 'permission', {get: () => 'default', configurable: true});
+  }
+})();
+"""
+
 FIREFOX_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
 
 
@@ -32,6 +72,8 @@ class BaseScraper:
     # Subclasses can override (e.g. Bradesco -> firefox). The env var BROWSER
     # sets the global default; the constructor argument wins over everything.
     default_browser: Optional[str] = None
+    # Canal do Chromium (ver init_browser); Bradesco usa "chromium".
+    chromium_channel: Optional[str] = None
 
     def __init__(self, use_proxy: bool = True, browser_type: Optional[str] = None):
         self.browser_type = normalize_browser(
@@ -75,26 +117,39 @@ class BaseScraper:
             )
             user_agent = FIREFOX_USER_AGENT
         else:
+            # None/"none": headless-shell padrão do Playwright. "chromium": headless
+            # novo (navegador completo), mais difícil de detectar, mas trava o
+            # networkidle do SEFAZ IPVA. "chrome": Google Chrome instalado.
+            # CHROMIUM_CHANNEL no .env sobrepõe o canal de todos os scrapers.
+            channel = (os.getenv("CHROMIUM_CHANNEL") or self.chromium_channel or "").strip().lower()
+            channel = None if channel in ("", "none") else channel
             self.browser = await self.playwright.chromium.launch(
                 headless=headless_env,
                 proxy=proxy,
+                channel=channel,
+                # Remove a flag que liga navigator.webdriver e a barra de automação
+                ignore_default_args=["--enable-automation"],
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
                     "--disable-setuid-sandbox",
                     "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--ozone-platform=headless",
-                    "--disable-software-rasterizer"
+                    # Sem GPU o WebGL some, o que denuncia automação; o SwiftShader
+                    # faz a renderização por software em servidores sem GPU.
+                    "--enable-unsafe-swiftshader",
                 ]
             )
-            user_agent = CHROMIUM_USER_AGENT
+            user_agent = chromium_user_agent(self.browser.version)
 
         self.context = await self.browser.new_context(
             user_agent=user_agent,
             viewport={'width': 1920, 'height': 1080},
             device_scale_factor=1,
+            locale="pt-BR",
+            timezone_id="America/Sao_Paulo",
         )
+        if not is_firefox:
+            await self.context.add_init_script(CHROMIUM_EVASIONS_JS)
 
         # Apply stealth plugin (it targets Chromium only, so skip it on Firefox)
         page = await self.context.new_page()

@@ -16,17 +16,20 @@ class BradescoScraper(BaseScraper):
     2. GRM - Multas de Trânsito (Histórico de Infrações)
     Realiza a soma total em ambos os casos.
 
-    O portal apresenta erros no Chromium/Chrome, então o Firefox é o navegador
-    principal. A ordem das tentativas é configurável por BRADESCO_BROWSERS
-    (ex.: "firefox,chromium"): a tentativa N usa o navegador N da lista e,
-    se houver mais tentativas que navegadores, a lista é repetida.
+    O Chromium é o navegador principal: o reCAPTCHA Enterprise do portal
+    bloqueia o Firefox automatizado ("Algo deu errado por aqui..."). A ordem
+    das tentativas é configurável por BRADESCO_BROWSERS (ex.: "chromium,firefox"):
+    a tentativa N usa o navegador N da lista e, se houver mais tentativas que
+    navegadores, a lista é repetida.
     """
-    default_browser = "firefox"
+    default_browser = "chromium"
+    # Headless novo: com o headless-shell o reCAPTCHA reprova a consulta com frequência.
+    chromium_channel = "chromium"
 
     def _browser_for_attempt(self, attempt: int) -> str:
-        raw = os.getenv("BRADESCO_BROWSERS", "firefox,chromium")
+        raw = os.getenv("BRADESCO_BROWSERS", "chromium")
         order = [normalize_browser(b, default="") for b in raw.split(",")]
-        order = [b for b in order if b] or ["firefox"]
+        order = [b for b in order if b] or ["chromium"]
         return order[attempt % len(order)]
 
     async def get_vehicle_data(self, renavam: str, cpf_cnpj: str) -> Dict[str, Any]:
@@ -39,7 +42,7 @@ class BradescoScraper(BaseScraper):
 
     async def get_grt_debts(self, renavam: str, cpf_cnpj: str) -> Dict[str, Any]:
         """Consulta débitos de IPVA/GRT (Licenciamento Anual)."""
-        max_retries = 2
+        max_retries = 4  # 5 tentativas no total
         for attempt in range(max_retries + 1):
             self.browser_type = self._browser_for_attempt(attempt)
             print(f"[*] [Bradesco-GRT] Iniciando consulta para Renavam: {renavam} (Tentativa {attempt+1}, navegador: {self.browser_type})")
@@ -143,7 +146,7 @@ class BradescoScraper(BaseScraper):
 
     async def get_fines_data(self, renavam: str, cpf_cnpj: str) -> Dict[str, Any]:
         """Consulta o histórico de Multas de Trânsito (GRM)."""
-        max_retries = 2
+        max_retries = 4  # 5 tentativas no total
         for attempt in range(max_retries + 1):
             self.browser_type = self._browser_for_attempt(attempt)
             print(f"[*] [Bradesco-GRM] Iniciando consulta para Renavam: {renavam} (Tentativa {attempt+1}, navegador: {self.browser_type})")
