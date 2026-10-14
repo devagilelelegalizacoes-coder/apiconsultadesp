@@ -21,6 +21,7 @@ from app.infrastructure.supabase_db import db as cache
 from app.security.encryption import encrypt_data, decrypt_data
 from app.scrapers.detran_rj import DetranRJScraper
 from app.scrapers.sefaz_rj import SefazRJScraper
+from app.scrapers.sefaz import SefazDiscoveryScraper
 from app.scrapers.bradesco import BradescoScraper
 from app.core.budget_coordinator import BudgetCoordinator
 from app.core.job_manager import JobManager
@@ -157,6 +158,27 @@ async def query_sefaz(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/sefaz/descobrir-cpf/{renavam}", tags=["Consultas IPVASefaz-RJ"])
+async def query_sefaz_descobrir_cpf(
+    renavam: str,
+    token: str = Depends(get_current_user)
+):
+    """
+    Descobre o CPF/CNPJ e o nome do contribuinte atual do IPVA a partir do Renavam
+    (Portal de Pagamentos da SEFAZ-RJ). Em caso de comunicação de venda, retorna o comprador.
+    """
+    renavam = "".join(filter(str.isdigit, renavam))
+    if not renavam or len(renavam) > 11:
+        raise HTTPException(status_code=400, detail="Renavam inválido")
+    try:
+        scraper = SefazDiscoveryScraper()
+        result = await scraper.discovery_owner_document(renavam)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not result:
+        raise HTTPException(status_code=404, detail="CPF/CNPJ não encontrado para este Renavam")
+    return {"source": "SEFAZ-RJ", "renavam": renavam.zfill(11), "status": "success", "data": result}
+
 @app.get("/bradesco/grt/{renavam}", tags=["Consultas Bradesco"])
 async def query_bradesco_grt(
     renavam: str,
@@ -209,16 +231,19 @@ async def query_vehicle(
 async def query_budget(
     placa: str,
     renavam: str,
-    cpf: str,
     chassi: str | None = None,
+    cpf: str | None = None,
     token: str = Depends(get_current_user)
 ):
     """
-    Executa o workflow completo de consulta para orçamento.
-    Inclui Detran Cadastro, Multas transitadas, descoberta de CPF, Bradesco e Dívida Ativa.
+    Executa o workflow completo de consulta para orçamento:
+    1. Detran Cadastro + descoberta do CPF/CNPJ na SEFAZ-RJ
+    2. Nada Consta Apreendido (+ multas Detran)
+    3. Apenas as fontes de débito apontadas no Nada Consta (GRT, IPVA, Dívida Ativa) + multas Bradesco
 
-    Renavam e CPF são obrigatórios. O Chassi é opcional e habilita a
-    verificação de "nada consta apreendido".
+    Renavam é obrigatório. O CPF é descoberto na SEFAZ-RJ; informe-o apenas para
+    forçar o documento usado nas consultas do Detran. O Chassi habilita o
+    "nada consta apreendido"; sem ele todas as fontes de débito são consultadas.
     """
     try:
         coordinator = BudgetCoordinator()
@@ -231,8 +256,8 @@ async def query_budget(
 async def query_budget_async(
     placa: str,
     renavam: str,
-    cpf: str,
     chassi: str | None = None,
+    cpf: str | None = None,
     token: str = Depends(get_current_user)
 ):
     """

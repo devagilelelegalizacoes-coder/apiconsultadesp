@@ -130,6 +130,7 @@ Chassi:   936clnfnwfb011733
 - `GET /detran/multas/{renavam}` - Multas transitadas
 - `GET /detran/nada-consta-apreendido/{placa}` - Nada consta apreendido
 - `GET /sefaz/{renavam}` - IPVA/Dívida Ativa
+- `GET /sefaz/descobrir-cpf/{renavam}` - CPF/CNPJ e nome do contribuinte atual
 - `GET /bradesco/grt/{renavam}` - Débitos GRT
 - `GET /bradesco/multas/{renavam}` - Débitos GRM
 
