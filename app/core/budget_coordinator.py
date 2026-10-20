@@ -11,12 +11,17 @@ from app.infrastructure.supabase_db import db as database
 from app.core.business_rules import BusinessRuleAnalyzer
 
 class BudgetCoordinator:
-    async def run_budget_query(self, placa: str, renavam: str, cpf: str, chassi: str | None = None, user: str = "system") -> Dict[str, Any]:
+    async def run_budget_query(self, placa: str, renavam: str, cpf: str | None = None, chassi: str | None = None, user: str = "system") -> Dict[str, Any]:
         """
         Executes the budget workflow.
 
-        Renavam/CPF are required; Chassi is optional and only used by the
-        "nada consta apreendido" check.
+        1. DETRAN Cadastro + descoberta do CPF/CNPJ na SEFAZ-RJ (em paralelo)
+        2. Nada Consta Apreendido (+ multas DETRAN, que são sempre consultadas)
+        3. Somente as fontes de débito que o Nada Consta aponta como "SIM"
+
+        Renavam is required. CPF is optional: when omitted it comes from the SEFAZ
+        discovery; when informed it is used on the DETRAN queries (owner registered
+        there). Chassi is optional and enables the Nada Consta check.
         """
         results = {
             "step_1_detran_cadastro": None,
@@ -30,73 +35,67 @@ class BudgetCoordinator:
             "errors": []
         }
 
-        # Scrapers
-        detran = DetranRJScraper()
-        sefaz_disc = SefazDiscoveryScraper()
-        sefaz_ipva = SefazRJScraper()
-        bradesco = BradescoScraper()
-
         try:
-            # --- Input validation (Renavam/CPF now come from the caller) ---
             renavam = "".join(filter(str.isdigit, str(renavam or "")))
-            cpf_proprietario = "".join(filter(str.isdigit, str(cpf or "")))
+            cpf_informado = "".join(filter(str.isdigit, str(cpf or "")))
 
             if not renavam:
                 raise Exception("Renavam is required.")
-            if not cpf_proprietario:
-                raise Exception("CPF/CNPJ is required.")
 
-            # --- STEP 0, 1 & 2: Nada Consta Apreendido + DETRAN Cadastro & Multas (in parallel) ---
-            # Nada Consta decides which debt sources (GRT, SEFAZ, Dívida Ativa) need to be queried
+            # --- STEP 1 & 3: DETRAN Cadastro + descoberta do CPF/CNPJ na SEFAZ (em paralelo, sem captcha pago na SEFAZ) ---
             # NOTE: We use separate instances to avoid concurrency issues with self.browser.close()
-            doc_type = "cpf" if len(cpf_proprietario) == 11 else "cnpj"
-            detran_tasks = [
+            print(f"[*] [Budget] Starting Step 1 & 3 (DETRAN Cadastro + SEFAZ CPF discovery)...")
+            cadastro_raw, owner_raw = await asyncio.gather(
                 DetranRJScraper().get_cadastro_data(placa),
-                DetranRJScraper().get_multas_detalhadas(renavam, cpf_proprietario),
-            ]
+                SefazDiscoveryScraper().discovery_owner_document(renavam),
+                return_exceptions=True,
+            )
+
+            # Step 1: Cadastro (Gravame, Caixa, GNV, Com.Venda)
+            results["step_1_detran_cadastro"] = cadastro_raw if not isinstance(cadastro_raw, Exception) else {"status": "error", "message": str(cadastro_raw)}
+            com_venda = results["step_1_detran_cadastro"].get("data", {}).get("comunicacao_venda") == "SIM" if results["step_1_detran_cadastro"].get("status") == "success" else False
+
+            # Step 3: SEFAZ returns the current IPVA taxpayer (the buyer when there is a Com. Venda)
+            if isinstance(owner_raw, dict) and owner_raw.get("cpf"):
+                results["step_3_owner_discovery"] = {"status": "success", "cpf": owner_raw["cpf"], "nome": owner_raw.get("nome")}
+                if cpf_informado:
+                    results["step_3_owner_discovery"]["divergente_do_informado"] = owner_raw["cpf"] != cpf_informado
+                print(f"[+] [Budget] CPF/CNPJ discovered via SEFAZ: {owner_raw['cpf']} ({owner_raw.get('nome')})")
+            else:
+                message = str(owner_raw) if isinstance(owner_raw, Exception) else "CPF/CNPJ não encontrado na SEFAZ-RJ"
+                results["step_3_owner_discovery"] = {"status": "error", "message": message}
+
+            cpf_sefaz = results["step_3_owner_discovery"].get("cpf")
+            # DETRAN checks the owner registered there; Bradesco charges the current taxpayer
+            detran_cpf = cpf_informado or cpf_sefaz
+            working_cpf = cpf_sefaz or cpf_informado
+            if not detran_cpf:
+                raise Exception("CPF/CNPJ não encontrado na SEFAZ-RJ. Informe o CPF/CNPJ do proprietário para continuar.")
+
+            # --- STEP 6 & 2: Nada Consta Apreendido + DETRAN Multas (in parallel) ---
+            # Nada Consta decides which debt sources (GRT, SEFAZ, Dívida Ativa) need to be queried.
+            # Multas are always queried, so they run alongside it to save time.
+            doc_type = "cpf" if len(detran_cpf) == 11 else "cnpj"
+            detran_tasks = [DetranRJScraper().get_multas_detalhadas(renavam, detran_cpf)]
             if chassi:
-                print(f"[*] [Budget] Starting Step 0, 1 & 2 (Nada Consta Apreendido + DETRAN Cadastro & Multas)...")
+                print(f"[*] [Budget] Starting Step 6 & 2 (Nada Consta Apreendido + DETRAN Multas) with CPF: {detran_cpf}")
                 detran_tasks.append(DetranRJScraper().get_nada_consta_apreendido_data(
-                    placa, chassi, renavam, doc_type, cpf_proprietario
+                    placa, chassi, renavam, doc_type, detran_cpf
                 ))
             else:
-                print(f"[*] [Budget] Step 0: Skipping Nada Consta (Chassi nao informado)...")
-                print(f"[*] [Budget] Starting Step 1 & 2 (DETRAN RJ Cadastro & Multas)...")
+                print(f"[*] [Budget] Skipping Nada Consta (Chassi nao informado); starting Step 2 (DETRAN Multas)...")
                 results["step_6_final_verification"] = {"status": "skipped", "message": "Chassi nao informado."}
 
             detran_raw = await asyncio.gather(*detran_tasks, return_exceptions=True)
 
-            if chassi:
-                results["step_6_final_verification"] = detran_raw[2] if not isinstance(detran_raw[2], Exception) else {"status": "error", "message": str(detran_raw[2])}
-
-            # Step 1: Cadastro (Gravame, Caixa, GNV, Com.Venda)
-            results["step_1_detran_cadastro"] = detran_raw[0] if not isinstance(detran_raw[0], Exception) else {"status": "error", "message": str(detran_raw[0])}
-
             # Step 2: Detailed Multas
-            results["step_2_detran_multas"] = detran_raw[1] if not isinstance(detran_raw[1], Exception) else {"status": "error", "message": str(detran_raw[1])}
-
-            # --- STEP 3: SEFAZ (Only if Com. Venda detected) ---
-            com_venda = results["step_1_detran_cadastro"].get("data", {}).get("comunicacao_venda") == "SIM" if results["step_1_detran_cadastro"].get("status") == "success" else False
-            working_cpf = cpf_proprietario
-            
-            if com_venda:
-                print(f"[*] [Budget] Communication of Sale detected. Discovering actual owner CPF via SEFAZ...")
-                comprador = await sefaz_disc.discovery_owner_document(renavam)
-                if comprador:
-                    results["step_3_owner_discovery"] = {
-                        "status": "success",
-                        "cpf": comprador["cpf"],
-                        "nome": comprador["nome"],
-                        "divergente_do_informado": comprador["cpf"] != cpf_proprietario,
-                    }
-                    working_cpf = comprador["cpf"]
-                    print(f"[+] [Budget] New owner CPF discovered: {working_cpf} ({comprador['nome']})")
-                else:
-                    results["step_3_owner_discovery"] = {"status": "error", "message": "Failed to discover new CPF"}
+            results["step_2_detran_multas"] = detran_raw[0] if not isinstance(detran_raw[0], Exception) else {"status": "error", "message": str(detran_raw[0])}
+            if chassi:
+                results["step_6_final_verification"] = detran_raw[1] if not isinstance(detran_raw[1], Exception) else {"status": "error", "message": str(detran_raw[1])}
 
             # --- STEP 4, 5 & 6-Part-2: Bradesco (GRT & Multas) and SEFAZ (IPVA/DívAtiva) ---
             print(f"[*] [Budget] Starting Step 4, 5 & SEFAZ with CPF: {working_cpf}")
-            
+
             # Smart Skip Check from Nada Consta: each debt source is queried only when its item is "SIM".
             # Without a confirmed Nada Consta (no chassi, or it failed) query everything.
             # Multas are always queried: Nada Consta omits fines still in autuação/recurso.

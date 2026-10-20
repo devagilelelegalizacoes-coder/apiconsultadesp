@@ -13,12 +13,12 @@ class SefazRJScraper(BaseScraper):
             page = await self.init_browser(use_stealth=False)
             try:
                 print(f"[*] [SEFAZ] Attempt {attempt}/{MAX_RETRIES} for Renavam {renavam}")
-                await page.goto("https://darj-ipva-web.fazenda.rj.gov.br/darj-ipva-web/#/", wait_until="networkidle")
-                
-                await self.simulate_interaction(page)
-                
+                # O portal faz polling contínuo (agente Dynatrace), então "networkidle" nunca é atingido
+                await page.goto("https://darj-ipva-web.fazenda.rj.gov.br/darj-ipva-web/#/", wait_until="domcontentloaded", timeout=60000)
+
                 # Fill Renavam
-                await page.wait_for_selector("#renavam")
+                await page.wait_for_selector("#renavam", timeout=30000)
+                await self.simulate_interaction(page)
                 await page.fill("#renavam", renavam)
                 
                 # Handle Image Captcha
