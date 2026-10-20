@@ -21,6 +21,7 @@ from app.infrastructure.supabase_db import db as cache
 from app.security.encryption import encrypt_data, decrypt_data
 from app.scrapers.detran_rj import DetranRJScraper
 from app.scrapers.detran_pontuacao import DetranPontuacaoScraper
+from app.scrapers.wdapi import WDAPIClient
 from app.scrapers.sefaz_rj import SefazRJScraper
 from app.scrapers.sefaz import SefazDiscoveryScraper
 from app.scrapers.bradesco import BradescoScraper
@@ -170,6 +171,26 @@ async def query_detran_pontuacao_cnh(
         return await scraper.get_pontuacao_cnh(cpf, cnh, uf=uf, pgu=pgu)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/placa/{placa}", tags=["Consultas API Placas"])
+async def query_api_placas(
+    placa: str,
+    atualizar: bool = False,
+    token: str = Depends(get_current_user)
+):
+    """
+    Consulta o veículo pela placa na API Placas (wdapi2.com.br): marca/modelo,
+    chassi, FIPE, restrições (ex.: alienação fiduciária) e dados técnicos.
+    Cada consulta gasta crédito, por isso a resposta fica em cache por 24h;
+    use atualizar=true para forçar uma nova consulta.
+    """
+    placa_limpa = "".join(ch for ch in placa.upper() if ch.isalnum())
+    if len(placa_limpa) != 7:
+        raise HTTPException(status_code=400, detail="Placa inválida")
+    result = await WDAPIClient().get_placa(placa_limpa, atualizar=atualizar)
+    if result["status"] != "success":
+        raise HTTPException(status_code=502, detail=result["message"])
+    return result
 
 @app.get("/sefaz/{renavam}", tags=["Consultas IPVASefaz-RJ"])
 async def query_sefaz(
