@@ -129,6 +129,7 @@ Chassi:   936clnfnwfb011733
 - `GET /detran/cadastro/{placa}` - Dados cadastrais
 - `GET /detran/multas/{renavam}` - Multas transitadas
 - `GET /detran/nada-consta-apreendido/{placa}` - Nada consta apreendido
+- `GET /detran/pontuacao-cnh/{cnh}?cpf=` - Pontuação da CNH (12 meses / 5 anos, suspensão e cassação) e lista dos autos dos últimos 5 anos
 - `GET /sefaz/{renavam}` - IPVA/Dívida Ativa
 - `GET /sefaz/descobrir-cpf/{renavam}` - CPF/CNPJ e nome do contribuinte atual
 - `GET /bradesco/grt/{renavam}` - Débitos GRT

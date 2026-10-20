@@ -20,6 +20,7 @@ from app.core.coordinator import QueryCoordinator
 from app.infrastructure.supabase_db import db as cache
 from app.security.encryption import encrypt_data, decrypt_data
 from app.scrapers.detran_rj import DetranRJScraper
+from app.scrapers.detran_pontuacao import DetranPontuacaoScraper
 from app.scrapers.sefaz_rj import SefazRJScraper
 from app.scrapers.sefaz import SefazDiscoveryScraper
 from app.scrapers.bradesco import BradescoScraper
@@ -142,6 +143,31 @@ async def query_detran_nada_consta_apreendido(
         scraper = DetranRJScraper()
         result = await scraper.get_nada_consta_apreendido_data(placa, chassi, renavam, doc_type, doc_num)
         return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/detran/pontuacao-cnh/{cnh}", tags=["Consultas Detran-RJ"])
+async def query_detran_pontuacao_cnh(
+    cnh: str,
+    cpf: str,
+    uf: str = "RJ",
+    pgu: bool = False,
+    token: str = Depends(get_current_user)
+):
+    """
+    Consulta a pontuação da CNH no DETRAN-RJ: pontos e quantidade de autos dos
+    últimos 5 anos e 12 meses, situação das infrações e processos de
+    suspensão/cassação ativos. Informe pgu=true quando o número for do PGU.
+    """
+    cpf = "".join(filter(str.isdigit, cpf))
+    cnh = "".join(filter(str.isdigit, cnh))
+    if len(cpf) != 11:
+        raise HTTPException(status_code=400, detail="CPF inválido")
+    if not cnh or len(cnh) > 11:
+        raise HTTPException(status_code=400, detail="Número da CNH/PGU inválido")
+    try:
+        scraper = DetranPontuacaoScraper()
+        return await scraper.get_pontuacao_cnh(cpf, cnh, uf=uf, pgu=pgu)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
