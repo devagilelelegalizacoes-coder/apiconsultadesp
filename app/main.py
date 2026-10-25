@@ -25,6 +25,7 @@ from app.scrapers.wdapi import WDAPIClient
 from app.scrapers.sefaz_rj import SefazRJScraper
 from app.scrapers.sefaz import SefazDiscoveryScraper
 from app.scrapers.bradesco import BradescoScraper
+from app.scrapers.autodoc import AutodocScraper, AutodocCadastro
 from app.core.budget_coordinator import BudgetCoordinator
 from app.core.job_manager import JobManager
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -253,6 +254,21 @@ async def query_bradesco_multas(
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/autodoc/cadastro", tags=["AutoDoc"])
+async def autodoc_cadastro(
+    dados: AutodocCadastro,
+    token: str = Depends(get_current_user)
+):
+    """
+    Cadastra o cliente e, opcionalmente, o veículo dele no AutoDoc, preenchendo as telas do sistema.
+    Não duplica: se o CPF/CNPJ ou a placa já existirem, devolve o cadastro existente com criado=false.
+    O tipo do veículo aceita a espécie/tipo do CRLV (ex.: "PASSAGEIRO MOTOCICLETA").
+    """
+    result = await AutodocScraper().cadastrar(dados)
+    if result["status"] != "success":
+        raise HTTPException(status_code=502, detail=result["message"])
+    return result
 
 # --- ENDPOINT CONSOLIDADO ---
 
