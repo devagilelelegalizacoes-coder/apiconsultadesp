@@ -7,6 +7,7 @@ from app.scrapers.sefaz_rj import SefazRJScraper
 from app.scrapers.sefaz import SefazDiscoveryScraper
 from app.scrapers.bradesco import BradescoScraper
 from app.scrapers.divida_ativa_rj import DividaAtivaRJScraper
+from app.scrapers.wdapi import WDAPIClient
 from app.infrastructure.supabase_db import db as database
 from app.core.business_rules import BusinessRuleAnalyzer
 
@@ -21,9 +22,11 @@ class BudgetCoordinator:
 
         Renavam is required. CPF is optional: when omitted it comes from the SEFAZ
         discovery; when informed it is used on the DETRAN queries (owner registered
-        there). Chassi is optional and enables the Nada Consta check.
+        there). Chassi is optional: when omitted it comes from API Placas, which also
+        adds the vehicle data (FIPE, restrições) to the result.
         """
         results = {
+            "step_0_api_placas": None,
             "step_1_detran_cadastro": None,
             "step_2_detran_multas": None,
             "step_3_owner_discovery": None,
@@ -42,14 +45,24 @@ class BudgetCoordinator:
             if not renavam:
                 raise Exception("Renavam is required.")
 
-            # --- STEP 1 & 3: DETRAN Cadastro + descoberta do CPF/CNPJ na SEFAZ (em paralelo, sem captcha pago na SEFAZ) ---
+            # --- STEP 0, 1 & 3: API Placas + DETRAN Cadastro + descoberta do CPF/CNPJ na SEFAZ (em paralelo) ---
             # NOTE: We use separate instances to avoid concurrency issues with self.browser.close()
-            print(f"[*] [Budget] Starting Step 1 & 3 (DETRAN Cadastro + SEFAZ CPF discovery)...")
-            cadastro_raw, owner_raw = await asyncio.gather(
+            print(f"[*] [Budget] Starting Step 0, 1 & 3 (API Placas + DETRAN Cadastro + SEFAZ CPF discovery)...")
+            placas_raw, cadastro_raw, owner_raw = await asyncio.gather(
+                WDAPIClient().get_placa(placa),
                 DetranRJScraper().get_cadastro_data(placa),
                 SefazDiscoveryScraper().discovery_owner_document(renavam),
                 return_exceptions=True,
             )
+
+            # Step 0: vehicle data; its full chassi enables the Nada Consta when none was informed
+            results["step_0_api_placas"] = placas_raw if not isinstance(placas_raw, Exception) else {"status": "error", "message": str(placas_raw)}
+            chassi = (chassi or "").strip().upper()
+            if not chassi and results["step_0_api_placas"].get("status") == "success":
+                chassi_placas = str(((results["step_0_api_placas"].get("data") or {}).get("extra") or {}).get("chassi") or "").strip().upper()
+                if len(chassi_placas) == 17:
+                    chassi = chassi_placas
+                    print(f"[+] [Budget] Chassi obtido na API Placas: {chassi}")
 
             # Step 1: Cadastro (Gravame, Caixa, GNV, Com.Venda)
             results["step_1_detran_cadastro"] = cadastro_raw if not isinstance(cadastro_raw, Exception) else {"status": "error", "message": str(cadastro_raw)}
@@ -84,7 +97,7 @@ class BudgetCoordinator:
                 ))
             else:
                 print(f"[*] [Budget] Skipping Nada Consta (Chassi nao informado); starting Step 2 (DETRAN Multas)...")
-                results["step_6_final_verification"] = {"status": "skipped", "message": "Chassi nao informado."}
+                results["step_6_final_verification"] = {"status": "skipped", "message": "Chassi nao informado nem encontrado na API Placas."}
 
             detran_raw = await asyncio.gather(*detran_tasks, return_exceptions=True)
 

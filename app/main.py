@@ -290,7 +290,8 @@ async def query_budget(
 
     Renavam é obrigatório. O CPF é descoberto na SEFAZ-RJ; informe-o apenas para
     forçar o documento usado nas consultas do Detran. O Chassi habilita o
-    "nada consta apreendido"; sem ele todas as fontes de débito são consultadas.
+    "nada consta apreendido"; sem ele, é buscado na API Placas (que também traz
+    FIPE e restrições), e se não for encontrado todas as fontes de débito são consultadas.
     """
     try:
         coordinator = BudgetCoordinator()
