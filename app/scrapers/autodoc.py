@@ -71,6 +71,16 @@ def _formatar_doc(doc: str) -> str:
     return d
 
 
+def _formatar_telefone(telefone: Optional[str]) -> str:
+    # The phone field has no mask; customers registered by hand are stored as "(21) 96928-3585"
+    d = _digitos(telefone)
+    if d.startswith("55") and len(d) in (12, 13):
+        d = d[2:]
+    if len(d) in (10, 11):
+        return f"({d[:2]}) {d[2:-4]}-{d[-4:]}"
+    return d
+
+
 def _palavras(texto: str) -> set:
     sem_acento = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode().upper()
     return set(re.findall(r"[A-Z]+", sem_acento))
@@ -159,7 +169,7 @@ class AutodocScraper(BaseScraper):
             await page.wait_for_timeout(500)
         campo_doc = "#cnpj" if len(documento) == 14 and await dialogo.locator("#cnpj").count() else "#cpf"
         campos = {
-            "#fullName": c.nome, "#email": c.email, "#phone": _digitos(c.telefone), campo_doc: documento,
+            "#fullName": c.nome, "#email": c.email, "#phone": _formatar_telefone(c.telefone), campo_doc: documento,
             "#rg": c.rg, "#rg_issuer": c.orgao_emissor, "#cep": _digitos(c.cep), "#city": c.cidade,
             "#street": c.rua, "#number": c.numero, "#neighborhood": c.bairro, "#state": c.uf,
         }

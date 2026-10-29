@@ -10,6 +10,42 @@ def _sem_acento(s: str) -> str:
     return unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode().upper()
 
 
+# Since 10/2026 the services live on apps-portal (embedded as iframes on www.detran.rj.gov.br); www2 is gone
+BASE_URL = "https://apps-portal.detran.rj.gov.br"
+
+# Cadastro and Nada Consta post via AJAX and show the fragment in #retorno, or the failure in #erroConsulta
+_AJAX_DONE = "#secaoResultadoConsulta:not(.d-none), #erroConsulta:not(.d-none)"
+
+_GATEWAY_ERRORS = ("BAD GATEWAY", "GATEWAY TIME-OUT", "SERVICE UNAVAILABLE")
+
+_CADASTRO_JS = """() => {
+    const r = document.querySelector('#retorno');
+    const txt = e => (e ? e.innerText : '').replace(/\\s+/g, ' ').trim();
+    const campos = {};
+    r.querySelectorAll('.cadastro-resultado__resumo > div').forEach(d => campos[txt(d.querySelector('span'))] = txt(d.querySelector('strong')));
+    r.querySelectorAll('dt').forEach(dt => campos[txt(dt)] = txt(dt.nextElementSibling));
+    const obs = r.querySelector('.cadastro-resultado__observacoes');
+    const titulo = obs && obs.querySelector('h3');
+    return {
+        campos,
+        placa: txt(r.querySelector('.cadastro-resultado__placa strong')),
+        gravame: txt(r.querySelector('.cadastro-resultado__gravame')),
+        observacoes: obs ? obs.innerText.replace(titulo ? titulo.innerText : '', '').trim() : '',
+        alertas: [...r.querySelectorAll('.alert')].map(txt),
+    };
+}"""
+
+# Every fine is a card: header with its status, body with "<strong>Campo:</strong> valor" pairs
+_MULTAS_JS = """() => [...document.querySelectorAll('main article.card')].map(card => {
+    const fine = {tipo_status: card.querySelector('.card-header').innerText.replace(/\\s+/g, ' ').trim()};
+    card.querySelectorAll('.card-body strong').forEach(s => {
+        const label = s.innerText.trim();
+        fine[label] = s.parentElement.innerText.replace(label, '').replace(/\\s+/g, ' ').trim();
+    });
+    return fine;
+})"""
+
+
 class DetranRJScraper(BaseScraper):
     async def get_vehicle_data(self, renavam: str, cpf: str, placa: str | None = None) -> Dict[str, Any]:
         """Orchestrates both Cadastro and Multas queries."""
@@ -87,201 +123,163 @@ class DetranRJScraper(BaseScraper):
         """)
         return inject_result
 
+    async def _resolver_captcha_se_houver(self, page, url: str, tag: str) -> bool:
+        """apps-portal launched without a captcha; if a reCAPTCHA comes back, solve it. False when solving failed."""
+        widget = page.locator("[data-sitekey]")
+        if not await widget.count():
+            return True
+        sitekey = await widget.first.get_attribute("data-sitekey")
+        print(f"[*] [{tag}] Resolvendo Captcha (Provedor: {solver.provider}, Sitekey: {sitekey})")
+        token = await solver.solve_recaptcha_v2(sitekey, url, task_type="RecaptchaV2EnterpriseTaskProxyless")
+        if not token:
+            return False
+        await self._inject_recaptcha_token(page, token)
+        return True
+
+    async def _consulta_ajax(self, page, tag: str) -> str | None:
+        """Clicks #btPesquisar and waits for the AJAX answer. Returns the #erroConsulta text when it failed."""
+        await page.click("#btPesquisar")
+        # The portal's gateway gives up after 30s with a 504
+        await page.wait_for_selector(_AJAX_DONE, timeout=60000)
+        erro = page.locator("#erroConsulta:not(.d-none)")
+        if await erro.count():
+            msg = (await erro.inner_text()).strip()
+            print(f"[!] [{tag}] {msg}")
+            return msg
+        return None
+
     async def get_cadastro_data(self, placa: str) -> Dict[str, Any]:
         """Scrapes vehicle registration data using Placa with retries."""
         max_retries = 2
+        last_error = ""
         for attempt in range(max_retries + 1):
             print(f"[*] [DETRAN-Cadastro] Starting query for Placa: {placa} (Attempt {attempt+1})")
             page = await self.init_browser(use_stealth=False)
             try:
-                url_cadastro = "https://www2.detran.rj.gov.br/portal/veiculos/consultaCadastro"
-                await page.goto(url_cadastro)
+                url_cadastro = BASE_URL + "/veiculos/consultaCadastro"
+                await page.goto(url_cadastro, wait_until="domcontentloaded", timeout=60000)
                 await page.fill("#placa", placa)
-                
-                sitekey_element = await page.wait_for_selector("#divCaptcha", state="attached")
-                sitekey = await sitekey_element.get_attribute("data-sitekey")
-                print(f"[*] [DETRAN-Cadastro] Resolvendo Captcha (Provedor: {solver.provider}, Sitekey: {sitekey})")
-                captcha_token = await solver.solve_recaptcha_v2(sitekey, url_cadastro, task_type="RecaptchaV2EnterpriseTaskProxyless")
-                
-                if captcha_token:
-                    print(f"[*] [DETRAN-Cadastro] Token obtido ({len(captcha_token)} chars). Injetando na pagina...")
-                    inject_result = await self._inject_recaptcha_token(page, captcha_token)
-                    print(f"[*] [DETRAN-Cadastro] Inject result: {inject_result}")
-                    await self.human_delay(800, 1200)
-                    
-                    print(f"[*] [DETRAN-Cadastro] Clicando em #btPesquisar...")
-                    try:
-                        await page.click("#btPesquisar", timeout=5000)
-                    except Exception as click_err:
-                        print(f"[!] [DETRAN-Cadastro] Click falhou ({click_err}), tentando via JS...")
-                        await page.evaluate("document.getElementById('btPesquisar').click()")
-                    
-                    print(f"[*] [DETRAN-Cadastro] Aguardando resposta da pagina...")
-                    
-                    # Wait for the page response robustly (up to 25s)
-                    found_selector = None
-                    try:
-                        found_selector = await page.wait_for_selector(
-                            "#retorno, #crlv-placa, .alert-danger, #erroCaptchaTop",
-                            state="visible", timeout=25000
-                        )
-                        print(f"[*] [DETRAN-Cadastro] Pagina respondeu!")
-                    except Exception as wfs_err:
-                        current_url = page.url
-                        page_title = await page.title()
-                        print(f"[!] [DETRAN-Cadastro] Timeout aguardando resposta. URL={current_url}, Title={page_title}")
-                        # Dump visible text to understand page state
-                        body_text = await page.evaluate("document.body.innerText.substring(0, 500)")
-                        print(f"[!] [DETRAN-Cadastro] Conteudo da pagina: {body_text}")
-                        await self.human_delay(3000, 4000)
-                    
-                    retorno_locator = page.locator("#retorno, .alert-danger")
-                    retorno_text = await retorno_locator.first.inner_text() if await retorno_locator.count() > 0 else ""
-                    retorno_text = retorno_text.replace('\ufeff', '').strip()
-                    print(f"[*] [DETRAN-Cadastro] Texto retorno: '{retorno_text[:100]}'")
+                if not await self._resolver_captcha_se_houver(page, url_cadastro, "DETRAN-Cadastro"):
+                    last_error = "Falha ao resolver o captcha"
+                    continue
 
-                    if "CAPTCHA INVÁLIDO" in retorno_text.upper():
-                        continue
+                if erro := await self._consulta_ajax(page, "DETRAN-Cadastro"):
+                    last_error = erro
+                    continue
 
-                    if "VEÍCULO NÃO ENCONTRADO" in retorno_text.upper():
+                retorno_text = (await page.inner_text("#retorno")).replace('﻿', '').strip()
+                print(f"[*] [DETRAN-Cadastro] Texto retorno: '{retorno_text[:100]}'")
+
+                if not await page.locator("#retorno .cadastro-resultado").count():
+                    # e.g. "Veículo não cadastrado na base estadual (RJ)!"
+                    if "NAO CADASTRADO" in _sem_acento(retorno_text) or "NAO ENCONTRADO" in _sem_acento(retorno_text):
                         return {"status": "success", "data": {}, "message": "Veículo não encontrado"}
+                    last_error = retorno_text or "Resultado da consulta não reconhecido"
+                    continue
 
-                    fields = ["crlv-licenciamento", "crlv-nome", "crlv-placa", "crlv-especie", 
-                              "crlv-combustivel", "crlv-marca", "crlv-ano-fabricacao", 
-                              "crlv-ano-modelo", "crlv-categoria", "crlv-cor", "crlv-observacoes", "crlv-local"]
-                    
-                    data = {}
-                    for field in fields:
-                        try:
-                            val = await page.locator(f"#{field}").text_content()
-                            data[field.replace("crlv-", "")] = val.strip() if val else ""
-                        except: data[field.replace("crlv-", "")] = ""
-                    
-                    primeira_linha = re.split(r"<|\n", retorno_text, maxsplit=1)[0].strip()
-                    data["mensagem_detran"] = primeira_linha if len(primeira_linha) > 15 and re.search(r"[A-Za-z]{4}", primeira_linha) else ""
-                    # Card shows "LOTAÇÃO / POTÊNCIA / CILINDRADA", e.g. "5 / 153 / 2000"
-                    lpc = re.search(r"^\s*(\d{1,3})\s*/\s*(\d{1,4})\s*/\s*(\d{1,5})\s*$", retorno_text, re.MULTILINE)
-                    if lpc:
-                        data["lotacao"], data["potencia"], data["cilindrada"] = lpc.groups()
-                    texto = _sem_acento(f"{retorno_text} {data.get('observacoes') or ''}")
-                    data["has_gravame"] = "SIM" if "ALIENACAO FIDUCIA" in texto or "GRAVAME" in texto or "RESERVA DE DOMINIO" in texto else "NÃO"
-                    data["comunicacao_venda"] = "SIM" if "COMUNICACAO DE VENDA" in texto or "INTENCAO DE VENDA" in texto else "NÃO"
-                    
-                    return {"status": "success", "data": data}
-                
-                else:
-                    print("[!] [DETRAN-Cadastro] Falha ao obter token do Captcha. Pulando tentativa.")
-                    
+                raw = await page.evaluate(_CADASTRO_JS)
+                campos = {_sem_acento(k): v for k, v in raw["campos"].items()}
+                observacoes = "" if raw["observacoes"] in ("", "—", "-") else raw["observacoes"]
+                # Same keys as the old www2 card (crlv-* ids), which the business rules and n8n flows read
+                data = {
+                    "licenciamento": campos.get("LICENCIAMENTO", ""),
+                    "nome": campos.get("PROPRIETARIO", ""),
+                    "placa": raw["placa"],
+                    "placa_anterior": campos.get("PLACA ANTERIOR", ""),
+                    "especie": campos.get("ESPECIE", ""),
+                    "combustivel": campos.get("COMBUSTIVEL", ""),
+                    "marca": campos.get("MARCA / MODELO", ""),
+                    "ano-fabricacao": campos.get("ANO DE FABRICACAO", ""),
+                    "ano-modelo": campos.get("ANO DO MODELO", ""),
+                    "categoria": campos.get("CATEGORIA", ""),
+                    "cor": campos.get("COR", ""),
+                    "observacoes": observacoes,
+                    "local": campos.get("MUNICIPIO", ""),
+                    "mensagem_detran": " | ".join(a for a in raw["alertas"] if a),
+                }
+                # "CAPACIDADE / POTÊNCIA / CILINDRADAS", e.g. "5 / 122 / 1587"
+                lpc = re.search(r"(\d{1,3})\s*/\s*(\d{1,4})\s*/\s*(\d{1,5})", campos.get("CAPACIDADE / POTENCIA / CILINDRADAS", ""))
+                if lpc:
+                    data["lotacao"], data["potencia"], data["cilindrada"] = lpc.groups()
+                texto = _sem_acento(f"{raw['gravame']} {observacoes} {data['mensagem_detran']}")
+                data["has_gravame"] = "SIM" if raw["gravame"] or "ALIENACAO FIDUCIA" in texto or "GRAVAME" in texto or "RESERVA DE DOMINIO" in texto else "NÃO"
+                data["comunicacao_venda"] = "SIM" if "COMUNICACAO DE VENDA" in texto or "INTENCAO DE VENDA" in texto else "NÃO"
+
+                return {"status": "success", "data": data}
+
             except Exception as e:
+                last_error = str(e)
                 print(f"[!] [DETRAN-Cadastro] Error: {e}")
             finally:
                 await self.close()
-        
-        return {"status": "error", "message": "Falha na consulta de cadastro."}
+
+        return {"status": "error", "message": f"Falha na consulta de cadastro. Último erro: {last_error}"}
 
     async def get_multas_detalhadas(self, renavam: str, cpf: str) -> Dict[str, Any]:
         """Scrapes fine data with detailed parsing for Transitado/Renainf with retries."""
         max_retries = 2
+        last_error = ""
         for attempt in range(max_retries + 1):
             print(f"[*] [DETRAN-MultasDetalhe] Starting query for Renavam: {renavam} (Attempt {attempt+1})")
             page = await self.init_browser(use_stealth=False)
             try:
-                url_multas = "https://www2.detran.rj.gov.br/portal/multas/nadaConsta"
-                await page.goto(url_multas)
-                await page.fill("#MultasRenavam", renavam)
-                await page.fill("#MultasCpfcnpj", cpf)
-                
-                sitekey_element = await page.wait_for_selector("#divCaptcha", state="attached")
-                sitekey = await sitekey_element.get_attribute("data-sitekey")
-                print(f"[*] [DETRAN-MultasDetalhe] Resolvendo Captcha (Provedor: {solver.provider}, Sitekey: {sitekey})")
-                captcha_token = await solver.solve_recaptcha_v2(sitekey, url_multas, task_type="RecaptchaV2EnterpriseTaskProxyless")
-                
-                if captcha_token:
-                    inject_result = await self._inject_recaptcha_token(page, captcha_token)
-                    print(f"[*] [DETRAN-MultasDetalhe] Inject result: {inject_result}")
-                    print(f"[*] [DETRAN-MultasDetalhe] Clicando em #btPesquisar...")
-                    try:
-                        await page.click("#btPesquisar", timeout=5000)
-                    except Exception as click_err:
-                        print(f"[!] [DETRAN-MultasDetalhe] Click falhou ({click_err}), tentando via JS...")
-                        await page.evaluate("document.getElementById('btPesquisar').click()")
-                    await self.human_delay(2000, 4000)
-                    
-                    # Wait for results page elements robustly
-                    try:
-                        await page.wait_for_selector(
-                            ".tabelaDescricao, #retorno, .alert, #multas_nada_consta_mensagem_erro, #erroCaptchaTop", 
-                            state="visible", timeout=25000
-                        )
-                    except Exception as wfs_err:
-                        current_url = page.url
-                        page_title = await page.title()
-                        print(f"[!] [DETRAN-MultasDetalhe] Timeout aguardando resposta. URL={current_url}, Title={page_title}")
-                        body_text = await page.evaluate("document.body.innerText.substring(0, 500)")
-                        print(f"[!] [DETRAN-MultasDetalhe] Conteudo da pagina: {body_text}")
-                    
-                    retorno_locator = page.locator("#retorno, .alert, #multas_nada_consta_mensagem_erro, #erroCaptchaTop")
-                    retorno_text = ""
-                    if await retorno_locator.count() > 0:
-                        retorno_text = await retorno_locator.first.inner_text()
-                    retorno_text = retorno_text.replace('\ufeff', '').strip()
-                    print(f"[*] [DETRAN-MultasDetalhe] Texto retorno: '{retorno_text[:100]}'")
-                    
-                    if "CAPTCHA INVÁLIDO" in retorno_text.upper():
-                        print("[!] [DETRAN-MultasDetalhe] Captcha inválido detectado. Tentando novamente...")
-                        continue
-                        
-                    tables = await page.locator(".tabelaDescricao").all()
-                    fines = []
-                    
-                    if not tables:
-                        body_all_text = await page.evaluate("document.body.innerText")
-                        if "não corresponde ao do proprietário" in body_all_text:
-                            return {"status": "error", "message": "Este CPF/CNPJ não corresponde ao do proprietário registrado no cadastro do Detran-RJ"}
-                        if "Renavam incorreto" in body_all_text or "Renavam inválido" in body_all_text:
-                            return {"status": "error", "message": "Renavam incorreto ou inválido"}
-                        if "NADA CONSTA" in retorno_text.upper() or "NÃO EXISTE" in retorno_text.upper() or not retorno_text:
-                            return {"status": "success", "data": [], "message": "Nada consta"}
-                        return {"status": "error", "message": retorno_text}
-                    
-                    for table in tables:
-                        fine_data = {}
-                        header_els = await table.locator("thead th").all()
-                        fine_data["tipo_status"] = (await header_els[0].inner_text()).strip() if header_els else ""
-                        
-                        cells = await table.locator("tbody td").all()
-                        for cell in cells:
-                            try:
-                                sub = cell.locator("span.sub-titulo")
-                                if await sub.count() > 0:
-                                    k = (await sub.first.inner_text()).replace(":", "").strip()
-                                    v = (await cell.inner_text()).replace(k, "").strip()
-                                    if k: fine_data[k] = v
-                            except: continue
-                        
-                        if fine_data:
-                            clean = {}
-                            for k, v in fine_data.items():
-                                # Normaliza a chave: remove chars inválidos (encoding misto Windows/Linux)
-                                ck = k.encode("ascii", errors="ignore").decode("ascii")
-                                ck = ck.lower().replace(" ", "_").replace("$", "").replace("valor_original_r", "valor_original").replace("valor_a_ser_pago_r", "valor_pago").strip()
-                                while "__" in ck: ck = ck.replace("__", "_")
-                                # Também normaliza o valor (remove prefixo ": \n" que vem do inner_text)
-                                vv = v.strip().lstrip(":\n").strip() if isinstance(v, str) else v
-                                clean[ck.strip("_")] = vv
-                            fines.append(clean)
-                    
-                    return {"status": "success", "data": fines}
-                
-                else:
-                    print("[!] [DETRAN-MultasDetalhe] Falha ao obter token do Captcha. Tentando novamente...")
-                    
+                url_multas = BASE_URL + "/multas/nadaConsta"
+                await page.goto(url_multas, wait_until="domcontentloaded", timeout=60000)
+                await page.fill("#multas-renavam", renavam)
+                await page.fill("#multas-cpfcnpj", cpf)
+                if not await self._resolver_captcha_se_houver(page, url_multas, "DETRAN-MultasDetalhe"):
+                    last_error = "Falha ao resolver o captcha"
+                    continue
+
+                # Unlike the other two, this form is a regular POST that loads a new page
+                async with page.expect_navigation(wait_until="domcontentloaded", timeout=90000):
+                    await page.click("#multasFormulario button[type=submit]")
+
+                fines = []
+                while True:
+                    body = await page.inner_text("body")
+                    if any(e in body.upper() for e in _GATEWAY_ERRORS):
+                        raise Exception("Portal do DETRAN indisponível (gateway)")
+                    fines += await page.evaluate(_MULTAS_JS)
+                    # "2 multas encontradas. Página 1 de 1"; the next page posts #formMultas
+                    pagina = re.search(r"P[áa]gina\s+(\d+)\s+de\s+(\d+)", body)
+                    if not pagina or int(pagina.group(1)) >= int(pagina.group(2)):
+                        break
+                    async with page.expect_navigation(wait_until="domcontentloaded", timeout=90000):
+                        await page.evaluate("document.getElementById('formMultas').submit()")
+
+                if not fines:
+                    # Errors come as an alert next to the fixed "AS INFORMAÇÕES SÃO VÁLIDAS..." one
+                    alertas = [a.strip() for a in await page.locator("main .alert").all_inner_texts()]
+                    msg = next((a for a in alertas if "VALIDAS ATE" not in _sem_acento(a)), "")
+                    print(f"[*] [DETRAN-MultasDetalhe] Texto retorno: '{msg[:100]}'")
+                    if "NAO CORRESPONDE" in _sem_acento(msg) or "NAO CONSTA NO CADASTRO" in _sem_acento(msg):
+                        return {"status": "error", "message": msg}
+                    if not msg or "NADA CONSTA" in _sem_acento(msg) or "NAO EXISTE" in _sem_acento(msg):
+                        return {"status": "success", "data": [], "message": "Nada consta"}
+                    return {"status": "error", "message": msg}
+
+                clean_fines = []
+                for fine_data in fines:
+                    clean = {}
+                    for k, v in fine_data.items():
+                        # Keys are the labels without accents, e.g. "Auto de Infração:" -> "auto_de_infrao"
+                        ck = k.replace(":", "").strip().encode("ascii", errors="ignore").decode("ascii")
+                        ck = ck.lower().replace(" ", "_").replace("$", "").replace("valor_original_r", "valor_original").replace("valor_a_ser_pago_r", "valor_pago").strip()
+                        while "__" in ck: ck = ck.replace("__", "_")
+                        clean[ck.strip("_")] = v
+                    clean_fines.append(clean)
+
+                print(f"[+] [DETRAN-MultasDetalhe] {len(clean_fines)} multas encontradas")
+                return {"status": "success", "data": clean_fines}
+
             except Exception as e:
+                last_error = str(e)
                 print(f"[!] [DETRAN-MultasDetalhe] Erro na tentativa: {e}")
             finally:
                 await self.close()
-                
-        return {"status": "error", "message": "Falha na consulta de multas após várias tentativas."}
+
+        return {"status": "error", "message": f"Falha na consulta de multas após várias tentativas. Último erro: {last_error}"}
 
     async def get_multas_data(self, renavam: str, cpf: str) -> Dict[str, Any]:
         """Wrapper for multas detailed with retries."""
@@ -290,71 +288,52 @@ class DetranRJScraper(BaseScraper):
     async def get_nada_consta_apreendido_data(self, placa: str, chassi: str, renavam: str, doc_type: str, doc_num: str) -> Dict[str, Any]:
         """Scrapes clearance data for impounded vehicles (Nada Consta Apreendido) with retries."""
         max_retries = 2
+        last_error = ""
         for attempt in range(max_retries + 1):
             print(f"[*] [DETRAN-NadaConsta] Starting query for Placa: {placa} (Attempt {attempt+1})")
             page = await self.init_browser(use_stealth=False)
             try:
-                url_nc = "https://www2.detran.rj.gov.br/portal/veiculos/consultaNadaConsta"
-                await page.goto(url_nc)
+                url_nc = BASE_URL + "/veiculos/consulta-nada-consta"
+                await page.goto(url_nc, wait_until="domcontentloaded", timeout=60000)
                 await page.fill("#placa", placa)
                 await page.fill("#chassi", chassi)
                 await page.fill("#renavam", renavam)
                 await page.select_option("#tipo_doc", value=doc_type.lower())
                 await page.fill("#num_doc", doc_num)
+                if not await self._resolver_captcha_se_houver(page, url_nc, "DETRAN-NadaConsta"):
+                    last_error = "Falha ao resolver o captcha"
+                    continue
 
-                sitekey_element = await page.wait_for_selector("#divCaptcha", state="attached")
-                sitekey = await sitekey_element.get_attribute("data-sitekey")
-                print(f"[*] [DETRAN-NadaConsta] Resolvendo Captcha (Provedor: {solver.provider}, Sitekey: {sitekey})")
-                captcha_token = await solver.solve_recaptcha_v2(sitekey, url_nc, task_type="RecaptchaV2EnterpriseTaskProxyless")
-                
-                if captcha_token:
-                    inject_result = await self._inject_recaptcha_token(page, captcha_token)
-                    print(f"[*] [DETRAN-NadaConsta] Inject result: {inject_result}")
-                    print(f"[*] [DETRAN-NadaConsta] Clicando em #btPesquisar...")
-                    try:
-                        await page.click("#btPesquisar", timeout=5000)
-                    except Exception as click_err:
-                        print(f"[!] [DETRAN-NadaConsta] Click falhou ({click_err}), tentando via JS...")
-                        await page.evaluate("document.getElementById('btPesquisar').click()")
-                    
-                    try:
-                        await page.wait_for_selector("#retorno, #erroCaptchaTop", state="visible", timeout=30000)
-                    except Exception as wfs_err:
-                        current_url = page.url
-                        page_title = await page.title()
-                        print(f"[!] [DETRAN-NadaConsta] Timeout aguardando resposta. URL={current_url}, Title={page_title}")
-                    
-                    ret_text = ""
-                    ret_locator = page.locator("#retorno, #erroCaptchaTop")
-                    if await ret_locator.count() > 0:
-                        ret_text = await ret_locator.first.inner_text()
-                    ret_text = ret_text.replace('\ufeff', '').strip()
-                    print(f"[*] [DETRAN-NadaConsta] Texto retorno: '{ret_text[:100]}'")
+                if erro := await self._consulta_ajax(page, "DETRAN-NadaConsta"):
+                    last_error = erro
+                    continue
 
-                    if "CAPTCHA INVÁLIDO" in ret_text.upper():
-                        print("[!] [DETRAN-NadaConsta] Captcha inválido detectado. Tentando novamente...")
-                        continue
+                ret_text = (await page.inner_text("#retorno")).replace('﻿', '').strip()
+                print(f"[*] [DETRAN-NadaConsta] Texto retorno: '{ret_text[:100]}'")
 
-                    results = {"debitos": {}}
-                    status_loc = page.locator("#erroCaptchaTop")
-                    results["status_geral"] = (await status_loc.inner_text()).strip() if await status_loc.count() > 0 else "NADA CONSTA"
+                # Each item is a "<débito>: SIM/NÃO" line (an <li> on the old www2 page)
+                results = {"debitos": {}}
+                itens = await page.locator("#retorno li").all_inner_texts() or ret_text.splitlines()
+                for text in itens:
+                    if ":" in text:
+                        p = text.split(":", 1)
+                        if not re.search(r"\b(SIM|N[ÃA]O)\b", p[1].upper()):
+                            continue
+                        k = p[0].strip().upper().replace(" ", "_")
+                        results["debitos"][k] = "SIM" if "SIM" in p[1].upper() else "NÃO"
 
-                    items = await page.locator("#retorno ol li").all()
-                    for item in items:
-                        text = await item.inner_text()
-                        if ":" in text:
-                            p = text.split(":", 1)
-                            k = p[0].strip().upper().replace(" ", "_")
-                            v = "SIM" if "SIM" in p[1].upper() else "NÃO"
-                            results["debitos"][k] = v
-                    
-                    return {"status": "success", "data": results}
-                
-                else:
-                    print("[!] [DETRAN-NadaConsta] Falha ao obter token do Captcha. Tentando novamente...")
+                # The verdict sits outside the list; the item lines themselves never are it
+                titulo = await page.locator("#retorno .alert, #retorno h2, #retorno h3, #retorno .vermelha").all_inner_texts()
+                results["status_geral"] = next((t.strip() for t in titulo if t.strip()), "NADA CONSTA")
+                if not results["debitos"]:
+                    results["texto_retorno"] = ret_text
+
+                return {"status": "success", "data": results}
+
             except Exception as e:
+                last_error = str(e)
                 print(f"[!] [DETRAN-NadaConsta] Erro na tentativa: {e}")
             finally:
                 await self.close()
-                
-        return {"status": "error", "message": "Falha na consulta de nada consta após várias tentativas."}
+
+        return {"status": "error", "message": f"Falha na consulta de nada consta após várias tentativas. Último erro: {last_error}"}

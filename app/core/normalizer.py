@@ -4,10 +4,13 @@ from pydantic import BaseModel, Field
 class Normalizer:
     @staticmethod
     def normalize_detran(data: Dict[str, Any]) -> Dict[str, Any]:
-        raw = data.get("data", {})
+        # get_vehicle_data nests each query: {"cadastro": {...}, "multas": {"status", "data": [fines]}}
+        multas = data.get("data", {}).get("multas", {})
+        if multas.get("status") != "success":
+            return {"origem": "DETRAN-RJ", "multas": multas.get("message", "Consulta de multas falhou")}
         return {
             "origem": "DETRAN-RJ",
-            "multas": raw.get("multas_bruto", "Nada consta")
+            "multas": multas.get("data") or "Nada consta"
         }
 
     @staticmethod
@@ -82,7 +85,7 @@ class Normalizer:
                 
                 multas = data.get("multas", {})
                 if multas.get("status") == "success":
-                    if "Nada consta" not in str(multas.get("multas_bruto")):
+                    if any((f.get("status_de_pagamento") or "").upper() != "PAGO" for f in multas.get("data") or []):
                         merged_consolidado["multas_ativas"] = True
                 
                 merged_detalhes.append(Normalizer.normalize_detran(res))
