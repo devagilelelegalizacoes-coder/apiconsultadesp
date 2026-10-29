@@ -14,7 +14,8 @@ if sys.platform == 'win32':
     except RuntimeError:
         print("[*] No event loop running yet, policy set.")
 
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, Response
+from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.coordinator import QueryCoordinator
 from app.infrastructure.supabase_db import db as cache
@@ -26,6 +27,7 @@ from app.scrapers.sefaz_rj import SefazRJScraper
 from app.scrapers.sefaz import SefazDiscoveryScraper
 from app.scrapers.bradesco import BradescoScraper
 from app.scrapers.autodoc import AutodocScraper, AutodocCadastro
+from app.scrapers.uniao21 import Uniao21Client, Uniao21Error
 from app.core.budget_coordinator import BudgetCoordinator
 from app.core.job_manager import JobManager
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -269,6 +271,102 @@ async def autodoc_cadastro(
     if result["status"] != "success":
         raise HTTPException(status_code=502, detail=result["message"])
     return result
+
+# --- UNIÃO 21 (app.uniao21.com) ---
+
+class Uniao21Recarga(BaseModel):
+    cpf_cnpj: str = Field(description="CPF/CNPJ do pagador do PIX")
+    valor: float = Field(description="Valor em reais (mínimo R$ 20,00; a partir de R$ 100,00 há bônus)")
+
+class Uniao21Emissao(BaseModel):
+    placas: list[str] = Field(default_factory=list, description="Uma ou mais placas (até o limite do serviço)")
+    renavam: str | None = Field(None, description="Obrigatório em atpv_e")
+    chassi: str | None = Field(None, description="Obrigatório em atpv_e_primeira_licenca")
+
+class Uniao21Consulta(BaseModel):
+    parametro: str = Field(description="Placa (ou o parâmetro que o serviço pede)")
+
+async def _uniao21(coro):
+    try:
+        return await coro
+    except Uniao21Error as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"União 21 indisponível: {e}")
+
+@app.get("/uniao21/saldo", tags=["União 21"])
+async def uniao21_saldo(token: str = Depends(get_current_user)):
+    """Saldo atual e gasto do dia na União 21."""
+    return await _uniao21(Uniao21Client().saldo())
+
+@app.get("/uniao21/servicos", tags=["União 21"])
+async def uniao21_servicos(token: str = Depends(get_current_user)):
+    """Serviços liberados para a conta (emissões e consultas), com preço e campos exigidos."""
+    return await _uniao21(Uniao21Client().servicos())
+
+@app.post("/uniao21/recarga", tags=["União 21"])
+async def uniao21_recarga(dados: Uniao21Recarga, token: str = Depends(get_current_user)):
+    """Gera um PIX de recarga de saldo e devolve o código copia e cola e o pagamento_id."""
+    return await _uniao21(Uniao21Client().recarregar(dados.cpf_cnpj, dados.valor))
+
+@app.get("/uniao21/recarga/{pagamento_id}", tags=["União 21"])
+async def uniao21_recarga_status(pagamento_id: int, token: str = Depends(get_current_user)):
+    """Situação do PIX de recarga: pago=true quando o saldo já foi creditado."""
+    return await _uniao21(Uniao21Client().status_recarga(pagamento_id))
+
+@app.get("/uniao21/recarga/{pagamento_id}/qr", tags=["União 21"])
+async def uniao21_recarga_qr(pagamento_id: int, token: str = Depends(get_current_user)):
+    """QR Code (PNG) do PIX de recarga."""
+    return Response(content=await _uniao21(Uniao21Client().qr_code_recarga(pagamento_id)), media_type="image/png")
+
+@app.get("/uniao21/financeiro", tags=["União 21"])
+async def uniao21_financeiro(status: str = "", page: int = 1, token: str = Depends(get_current_user)):
+    """Histórico de recargas PIX. status: pago, pendente ou cancelado."""
+    return await _uniao21(Uniao21Client().historico_financeiro(status=status, page=page))
+
+@app.post("/uniao21/emitir/{servico}", tags=["União 21"])
+async def uniao21_emitir(servico: str, dados: Uniao21Emissao, token: str = Depends(get_current_user)):
+    """
+    Emite um documento e debita o saldo (veja os serviços em /uniao21/servicos):
+    crlv_e, reemissao, crv_e, atpv_e (placa + renavam), atpv_e_consulta_placa,
+    atpv_e_primeira_licenca (chassi). O PDF sai em /uniao21/documentos/{doc_id}/pdf.
+    """
+    return await _uniao21(Uniao21Client().emitir(servico, dados.placas, renavam=dados.renavam, chassi=dados.chassi))
+
+@app.get("/uniao21/solicitacoes", tags=["União 21"])
+async def uniao21_solicitacoes(status: str = "", placa: str = "", page: int = 1, token: str = Depends(get_current_user)):
+    """Minhas solicitações (emissões). status: processando, emitido, erro ou pendente."""
+    return await _uniao21(Uniao21Client().solicitacoes(status=status, placa=placa, page=page))
+
+@app.get("/uniao21/documentos/{doc_id}", tags=["União 21"])
+async def uniao21_documento(doc_id: int, token: str = Depends(get_current_user)):
+    """Situação de uma emissão e se o PDF já está pronto."""
+    return await _uniao21(Uniao21Client().documento(doc_id))
+
+@app.get("/uniao21/documentos/{doc_id}/pdf", tags=["União 21"])
+async def uniao21_documento_pdf(doc_id: int, token: str = Depends(get_current_user)):
+    """Baixa o PDF de uma emissão."""
+    pdf = await _uniao21(Uniao21Client().pdf(doc_id))
+    return Response(content=pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="uniao21-{doc_id}.pdf"'})
+
+@app.post("/uniao21/consultar/{servico}", tags=["União 21"])
+async def uniao21_consultar(servico: str, dados: Uniao21Consulta, token: str = Depends(get_current_user)):
+    """Executa uma consulta paga (ex.: Proprietário Atual), quando liberada para a conta."""
+    return await _uniao21(Uniao21Client().consultar(servico, dados.parametro))
+
+@app.get("/uniao21/consultas/{consulta_id}", tags=["União 21"])
+async def uniao21_consulta(consulta_id: int, token: str = Depends(get_current_user)):
+    """Resultado de uma consulta já feita: veículo e proprietário."""
+    return await _uniao21(Uniao21Client().consulta(consulta_id))
+
+@app.get("/uniao21/historico", tags=["União 21"])
+async def uniao21_historico(tipo: str = "", periodo: str = "30d", page: int = 1, token: str = Depends(get_current_user)):
+    """
+    Movimentações do saldo com explicação de cada uma.
+    tipo: saldo, documento, consulta (vazio = todas). periodo: 7d, 30d, 90d, 365d, todos.
+    """
+    return await _uniao21(Uniao21Client().historico(tipo=tipo, periodo=periodo, page=page))
 
 # --- ENDPOINT CONSOLIDADO ---
 
