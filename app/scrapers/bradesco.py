@@ -8,6 +8,11 @@ from app.scrapers.base_scraper import BaseScraper, normalize_browser
 from app.infrastructure.captcha_solver import solver
 import time
 
+# O portal ib7 não aceita duas sessões simultâneas do mesmo IP: a segunda recebe
+# "Nao foi possível abrir Sessao" / "indisponível". Por isso GRT e GRM (que o
+# orçamento dispara em paralelo) passam por este lock e rodam uma de cada vez.
+_lock = asyncio.Lock()
+
 class BradescoScraper(BaseScraper):
     """
     Scraper para o portal Bradesco Detran RJ.
@@ -42,6 +47,15 @@ class BradescoScraper(BaseScraper):
 
     async def get_grt_debts(self, renavam: str, cpf_cnpj: str) -> Dict[str, Any]:
         """Consulta débitos de IPVA/GRT (Licenciamento Anual)."""
+        async with _lock:
+            return await self._get_grt_debts(renavam, cpf_cnpj)
+
+    async def get_fines_data(self, renavam: str, cpf_cnpj: str) -> Dict[str, Any]:
+        """Consulta o histórico de Multas de Trânsito (GRM)."""
+        async with _lock:
+            return await self._get_fines_data(renavam, cpf_cnpj)
+
+    async def _get_grt_debts(self, renavam: str, cpf_cnpj: str) -> Dict[str, Any]:
         max_retries = 4  # 5 tentativas no total
         for attempt in range(max_retries + 1):
             self.browser_type = self._browser_for_attempt(attempt)
@@ -144,8 +158,7 @@ class BradescoScraper(BaseScraper):
 
         return {"status": "error", "message": "Sistema indisponível no momento. Tente mais tarde. (0131)"}
 
-    async def get_fines_data(self, renavam: str, cpf_cnpj: str) -> Dict[str, Any]:
-        """Consulta o histórico de Multas de Trânsito (GRM)."""
+    async def _get_fines_data(self, renavam: str, cpf_cnpj: str) -> Dict[str, Any]:
         max_retries = 4  # 5 tentativas no total
         for attempt in range(max_retries + 1):
             self.browser_type = self._browser_for_attempt(attempt)
