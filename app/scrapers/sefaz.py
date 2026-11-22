@@ -3,6 +3,42 @@ from typing import Dict, Optional
 from app.scrapers.base_scraper import BaseScraper
 
 
+def _cpf_valido(cpf: str) -> bool:
+    if len(cpf) != 11 or cpf == cpf[0] * 11:
+        return False
+    for n in (9, 10):
+        soma = sum(int(cpf[i]) * (n + 1 - i) for i in range(n))
+        if (soma * 10 % 11) % 10 != int(cpf[n]):
+            return False
+    return True
+
+
+def _cnpj_valido(cnpj: str) -> bool:
+    if len(cnpj) != 14 or cnpj == cnpj[0] * 14:
+        return False
+    for n in (12, 13):
+        pesos = list(range(n - 7, 1, -1)) + list(range(9, 1, -1))
+        resto = sum(int(cnpj[i]) * pesos[i] for i in range(n)) % 11
+        if (0 if resto < 2 else 11 - resto) != int(cnpj[n]):
+            return False
+    return True
+
+
+def normalizar_documento(valor: str) -> Optional[str]:
+    """
+    The portal stores CPF/CNPJ as a number and drops leading zeros
+    (CPF 02413757708 comes back as 2413757708), so pad and pick by check digits.
+    """
+    digitos = "".join(filter(str.isdigit, valor or ""))
+    if len(digitos) < 8:
+        return None
+    if len(digitos) <= 11 and _cpf_valido(digitos.zfill(11)):
+        return digitos.zfill(11)
+    if len(digitos) <= 14 and _cnpj_valido(digitos.zfill(14)):
+        return digitos.zfill(14)
+    return None
+
+
 class SefazDiscoveryScraper(BaseScraper):
     """
     Portal de Pagamentos da Fazenda RJ: a partir do RENAVAM, o portal preenche
@@ -24,14 +60,14 @@ class SefazDiscoveryScraper(BaseScraper):
 
                 # Values are filled by JS, so read the DOM property (input_value), not the HTML attribute
                 cpf_field = page.locator("#txtCnpjCpf")
-                documento = ""
+                documento = None
                 for _ in range(30):
-                    documento = "".join(filter(str.isdigit, await cpf_field.input_value()))
-                    if len(documento) >= 11:
+                    documento = normalizar_documento(await cpf_field.input_value())
+                    if documento:
                         break
                     await asyncio.sleep(0.5)
 
-                if len(documento) >= 11:
+                if documento:
                     nome = (await page.locator("#txtNomeRazaoSocial").input_value()).strip()
                     print(f"[+] [Sefaz-RJ] Documento localizado: {documento} ({nome})")
                     return {"cpf": documento, "nome": nome}
