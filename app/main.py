@@ -29,6 +29,9 @@ from app.scrapers.sefaz import SefazDiscoveryScraper
 from app.scrapers.bradesco import BradescoScraper
 from app.scrapers.autodoc import AutodocScraper, AutodocCadastro
 from app.scrapers.uniao21 import Uniao21Client, Uniao21Error
+from app.scrapers.crdd import CRDDClient, CRDDError
+from app.infrastructure import documentos
+from typing import Any
 from app.core.budget_coordinator import BudgetCoordinator
 from app.core.job_manager import JobManager
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -408,6 +411,354 @@ async def uniao21_historico(tipo: str = "", periodo: str = "30d", page: int = 1,
     tipo: saldo, documento, consulta (vazio = todas). periodo: 7d, 30d, 90d, 365d, todos.
     """
     return await _uniao21(Uniao21Client().historico(tipo=tipo, periodo=periodo, page=page))
+
+# --- CRDD-RJ (portal.crddrj.com.br/despachante) ---
+
+class CRDDRecarga(BaseModel):
+    valor: float = Field(description="Valor em reais (mínimo R$ 10,00)")
+
+class CRDDAsd(BaseModel):
+    servicos: list[str] = Field(description="Códigos de /crdd/asd/servicos, ex.: ['INTENCAO_VENDA'] ou ['TRANSF_PROPRIEDADE']")
+    contratante_cpf_cnpj: str = Field(description="Quem contrata o serviço; nem sempre é o proprietário, informe sempre")
+    contratante_nome: str
+    placa: str | None = None
+    renavam: str | None = None
+    chassi: str | None = None
+    marca_modelo: str | None = None
+    ano_fabricacao: str | None = None
+    ano_modelo: str | None = None
+    especie: str | None = None
+    categoria: str | None = None
+    tipo: str | None = None
+    cor: str | None = None
+    combustivel: str | None = None
+    crv_nota_fiscal: str | None = None
+    crv_data_emissao: str | None = Field(None, description="AAAA-MM-DD")
+    uf_carro: str | None = None
+    municipio_carro: str | None = Field(None, description="Nome do município do veículo")
+    proprietario_nome: str = Field(description="Proprietário Atual = novo dono após a transferência (na ATPV, o comprador)")
+    proprietario_cpf_cnpj: str
+    proprietario_identidade: str | None = None
+    proprietario_orgao: str | None = None
+    proprietario_data_expedicao: str | None = Field(None, description="AAAA-MM-DD")
+    proprietario_uf_identidade: str | None = None
+    cep: str | None = Field(None, description="CEP do Proprietário Atual; endereço, bairro, UF e município são completados por ele quando não informados")
+    endereco: str | None = None
+    complemento: str | None = None
+    bairro: str | None = None
+    uf: str | None = None
+    municipio: str | None = None
+    anterior_nome: str | None = Field(None, description="Proprietário Anterior = dono no CRLV antes da transferência (na ATPV, o vendedor)")
+    anterior_cpf_cnpj: str | None = None
+    observacao: str | None = None
+    documentos: list[str] = Field(default_factory=list, description="Textos exatos dos checkboxes da aba Documentos")
+    outros_documentos: str | None = None
+    processo_administrativo_tipo: str | None = None
+    rascunho_id: int | None = None
+    gerar: bool = Field(False, description="false = salva como Rascunho (sem custo); true = Gera o ASD e debita R$ 3,00")
+
+class CRDDCrlve(BaseModel):
+    placa: str
+    renavam: str
+    cpf_proprietario: str
+    nome_proprietario: str
+    cpf_contratante: str = Field(description="Quem contrata o serviço; nem sempre é o proprietário")
+    nome_contratante: str
+
+class CRDDComunicacao(BaseModel):
+    tipo: str = Field("ATPV-e", description="ATPV-e (digital) ou CRV/DUT (físico)")
+    vendedor_cpf_cnpj: str
+    vendedor_nome: str
+    venda_estado: str = "RJ"
+    venda_cidade: str = Field(description="Município da venda (nome ou código do CRDD)")
+    venda_data: str = Field(description="AAAA-MM-DD")
+    venda_valor: str = Field(description="Ex.: 19000 ou 19.000,00")
+    comprador_cpf_cnpj: str
+    comprador_nome: str
+    comprador_celular: str | None = None
+    comprador_end_cep: str
+    comprador_end_logradouro: str
+    comprador_end_numero: str
+    comprador_end_bairro: str
+    comprador_end_complemento: str | None = None
+    comprador_end_estado: str = "RJ"
+    comprador_end_cidade: str = Field(description="Nome do município ou código do CRDD")
+    veiculo_placa: str
+    veiculo_renavam: str
+    veiculo_crv_numero: str
+    veiculo_crv_codseg: str
+    veiculo_crv_via: int = 1
+    veiculo_crv_emissao: str = Field(description="AAAA-MM-DD")
+    veiculo_crv_emissao_uf: str = "RJ"
+    veiculo_ano_fab: str
+    veiculo_ano_mod: str
+
+class CRDDCancelarComunicacao(BaseModel):
+    motivo: int = Field(description="1 registro indevido, 2 dados incorretos, 3 desistência, 8 leilão")
+    observacoes: str
+    codigo_seguranca_crv: str | None = None
+    renavam: str | None = None
+
+class CRDDIntencao(BaseModel):
+    uf: str = "RJ"
+    veiculo: dict = Field(description="placa, renavam, chassi, marca, modelo, cor, ano_fabricacao, ano_modelo, categoria, numero_crv, valor_venda, data_venda (AAAA-MM-DD)")
+    vendedor: dict = Field(description="documento, nome, email, telefone, data_nascimento, endereco{cep, uf, cidade, bairro, logradouro, numero, complemento}")
+    comprador: dict = Field(description="documento, nome, email, telefone, endereco{cep, uf, cidade, bairro, logradouro, numero, complemento} (endereço obrigatório)")
+
+class CRDDIntencaoAcao(BaseModel):
+    acao: str = Field(description="cancelar ou recuperar_atpv")
+    duda: str | None = Field(None, description="Exigida no cancelamento quando o portal pedir")
+
+async def _crdd(coro):
+    try:
+        return await coro
+    except CRDDError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"CRDD indisponível: {e}")
+
+def _pdf(conteudo: bytes, nome: str) -> Response:
+    return Response(content=conteudo, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{nome}.pdf"'})
+
+async def _documento(tipo: str, referencia: Any, baixar, nome: str, placa: str | None = None,
+                     descricao: str | None = None, atualizar: bool = False) -> Response:
+    """
+    Serve the PDF from the database; on the first request it is downloaded from the CRDD,
+    compressed and stored. The database is a cache: if it is unavailable the PDF still goes out.
+    """
+    if not atualizar:
+        try:
+            if guardado := await documentos.buscar(tipo, referencia):
+                return _pdf(guardado, nome)
+        except Exception as e:
+            print(f"[!] [Documentos] Leitura falhou ({tipo} {referencia}): {e}")
+    original = await _crdd(baixar())
+    pdf = documentos.comprimir_pdf(original)
+    try:
+        await documentos.salvar(tipo, referencia, pdf, placa=placa, descricao=descricao, tamanho_original=len(original))
+    except Exception as e:
+        print(f"[!] [Documentos] Gravação falhou ({tipo} {referencia}): {e}")
+    return _pdf(pdf, nome)
+
+@app.get("/crdd/documentos", tags=["CRDD-RJ"])
+async def crdd_documentos(tipo: str = "", placa: str = "", limite: int = 50, token: str = Depends(get_current_user)):
+    """Documentos já guardados no banco (tipo: asd, crlve, comunicacao, atpve), com tamanho original e comprimido."""
+    try:
+        return await documentos.listar(tipo, placa, limite)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Banco de documentos indisponível (rode sql/crdd_documentos.sql): {e}")
+
+@app.get("/crdd/saldo", tags=["CRDD-RJ"])
+async def crdd_saldo(token: str = Depends(get_current_user)):
+    """Saldo da carteira pré-paga (soma de recargas e estornos menos os serviços) e os últimos lançamentos."""
+    return await _crdd(CRDDClient().saldo())
+
+@app.get("/crdd/extrato", tags=["CRDD-RJ"])
+async def crdd_extrato(data_ini: str = "", data_fim: str = "", token: str = Depends(get_current_user)):
+    """Lançamentos da carteira (AAAA-MM-DD). tipo: R recarga, M serviço debitado, C estorno."""
+    return await _crdd(CRDDClient().extrato(data_ini or None, data_fim or None))
+
+@app.get("/crdd/movimento", tags=["CRDD-RJ"])
+async def crdd_movimento(placa: str = "", renavam: str = "", chassi: str = "", data_ini: str = "", data_fim: str = "",
+                         token: str = Depends(get_current_user)):
+    """Serviços cobrados na carteira, com estornos. Sem filtro, traz o ano corrente."""
+    return await _crdd(CRDDClient().movimento(placa, renavam, chassi, data_ini, data_fim))
+
+@app.post("/crdd/recarga", tags=["CRDD-RJ"])
+async def crdd_recarga(dados: CRDDRecarga, token: str = Depends(get_current_user)):
+    """Gera um PIX para colocar crédito na carteira: copia e cola, QR Code (base64) e txid."""
+    return await _crdd(CRDDClient().recarregar(dados.valor))
+
+@app.get("/crdd/recarga/{txid}", tags=["CRDD-RJ"])
+async def crdd_recarga_status(txid: str, token: str = Depends(get_current_user)):
+    """Situação do PIX de recarga: pago=true quando o crédito já entrou na carteira."""
+    return await _crdd(CRDDClient().status_recarga(txid))
+
+@app.get("/crdd/placa/{placa}", tags=["CRDD-RJ"])
+async def crdd_placa(placa: str, token: str = Depends(get_current_user)):
+    """Dados do veículo na base do CRDD (chassi, motor, ano, cor, espécie...). Sem custo."""
+    return await _crdd(CRDDClient().buscar_placa(placa))
+
+@app.get("/crdd/cep/{cep}", tags=["CRDD-RJ"])
+async def crdd_cep(cep: str, token: str = Depends(get_current_user)):
+    """Endereço e código do município do CRDD a partir do CEP."""
+    return await _crdd(CRDDClient().buscar_cep(cep))
+
+@app.get("/crdd/municipios", tags=["CRDD-RJ"])
+async def crdd_municipios(termo: str, uf: str = "", token: str = Depends(get_current_user)):
+    """Municípios do CRDD (id, nome, UF, código IBGE)."""
+    return await _crdd(CRDDClient().municipios(termo, uf))
+
+@app.get("/crdd/asd/servicos", tags=["CRDD-RJ"])
+async def crdd_asd_servicos(token: str = Depends(get_current_user)):
+    """Serviços que podem ir no ASD Digital do DETRAN-RJ."""
+    return await _crdd(CRDDClient().asd_servicos())
+
+@app.get("/crdd/asd", tags=["CRDD-RJ"])
+async def crdd_asd_listar(placa: str = "", chassi: str = "", proprietario: str = "", page: int = 1,
+                          token: str = Depends(get_current_user)):
+    """Lista de ASD Digital (status, proprietário, serviço e selo_id para baixar o PDF)."""
+    return await _crdd(CRDDClient().asd_listar(placa, chassi, proprietario, page))
+
+@app.post("/crdd/asd", tags=["CRDD-RJ"])
+async def crdd_asd_criar(dados: CRDDAsd, token: str = Depends(get_current_user)):
+    """
+    Cria um ASD Digital no DETRAN-RJ. Por padrão salva como RASCUNHO (sem custo);
+    gerar=true gera o ASD e debita a carteira. O contratante (quem contrata o serviço) é informado
+    à parte e nem sempre é o proprietário. Na ATPV: proprietário atual = comprador; proprietário anterior = vendedor.
+    """
+    cliente = CRDDClient()
+    d = dados.model_dump()
+    if d["cep"] and not d["endereco"]:
+        endereco = await _crdd(cliente.buscar_cep(d["cep"]))
+        d["endereco"] = " ".join(filter(None, [endereco.get("tipo"), endereco.get("logradouro")]))
+        d["bairro"] = d["bairro"] or endereco.get("bairro")
+        d["uf"] = d["uf"] or endereco.get("localidade_uf")
+        d["municipio"] = d["municipio"] or endereco.get("localidade")
+    campos = {
+        "selo_cpf_cnpj": d["contratante_cpf_cnpj"], "selo_nome_razao": d["contratante_nome"],
+        "selo_servicos": d["servicos"], "processo_administrativo_tipo": d["processo_administrativo_tipo"],
+        "placa_documental": (d["placa"] or "").upper() or None, "renavam_documental": d["renavam"],
+        "chassi_documental": (d["chassi"] or "").upper() or None, "crv_nota_fiscal": d["crv_nota_fiscal"],
+        "data_carro": d["crv_data_emissao"], "marca_modelo": d["marca_modelo"], "ano_fabricacao": d["ano_fabricacao"], "ano_modelo": d["ano_modelo"],
+        "especie": d["especie"], "categoria": d["categoria"], "tipo": d["tipo"], "cor": d["cor"],
+        "combustivel": d["combustivel"], "uf_carro": d["uf_carro"], "municipio_carro": d["municipio_carro"],
+        "beneficiario_proprietario": d["proprietario_nome"], "beneficiario_cpf_cnpj": d["proprietario_cpf_cnpj"],
+        "beneficiario_identidade": d["proprietario_identidade"], "beneficiario_orgao": d["proprietario_orgao"],
+        "beneficiario_data_expedicao": d["proprietario_data_expedicao"], "beneficiario_uf": d["proprietario_uf_identidade"],
+        "beneficiario_cep": d["cep"], "beneficiario_endereco": d["endereco"], "beneficiario_complemento": d["complemento"],
+        "beneficiario_bairro": d["bairro"], "beneficiario_uf_restricao": d["uf"],
+        "beneficiario_municipio_restricao": (d["municipio"] or "").upper() or None,
+        "beneficiario_proprietario_anterior": d["anterior_nome"], "beneficiario_cpf_cnpj_anterior": d["anterior_cpf_cnpj"],
+        "beneficiario_observacao": d["observacao"], "documentos": d["documentos"],
+        "outros_documentos": d["outros_documentos"], "rascunho_id": d["rascunho_id"],
+    }
+    resultado = await _crdd(cliente.asd_criar(campos, gerar=dados.gerar))
+    if dados.gerar:
+        # Keep the generated ASD in the database right away
+        for registro in resultado.get("registros", []):
+            if registro.get("selo_id") and registro.get("status", "").lower().startswith("conclu"):
+                try:
+                    pdf = await cliente.asd_pdf(registro["selo_id"])
+                    resultado["documento"] = await documentos.salvar(
+                        "asd", registro["selo_id"], pdf, placa=registro.get("placa"),
+                        descricao=f"{registro.get('servico')} - {registro.get('proprietario')}")
+                except Exception as e:
+                    print(f"[!] [Documentos] ASD {registro['selo_id']} não foi guardado: {e}")
+                break
+    return resultado
+
+@app.get("/crdd/asd/{selo_id}/pdf", tags=["CRDD-RJ"])
+async def crdd_asd_pdf(selo_id: int, placa: str = "", atualizar: bool = False, token: str = Depends(get_current_user)):
+    """PDF de um ASD Digital concluído (do banco; na primeira vez baixa do CRDD, comprime e guarda)."""
+    return await _documento("asd", selo_id, lambda: CRDDClient().asd_pdf(selo_id), f"ASD_{placa or selo_id}",
+                            placa=placa.upper() or None, atualizar=atualizar)
+
+@app.get("/crdd/crlve", tags=["CRDD-RJ"])
+async def crdd_crlve_listar(placa: str = "", cpf: str = "", situacao: str = "", page: int = 1,
+                            token: str = Depends(get_current_user)):
+    """
+    Pedidos de CRLV-e. situacao: na_fila, confirmacao_pendente, asd_pendente_aprovacao,
+    aguardando_documento, crlv_emitido. O id aparece quando o CRLV já foi emitido.
+    """
+    return await _crdd(CRDDClient().crlve_listar(placa, cpf, situacao, page))
+
+@app.post("/crdd/crlve", tags=["CRDD-RJ"])
+async def crdd_crlve_solicitar(dados: CRDDCrlve, token: str = Depends(get_current_user)):
+    """Solicita a impressão do CRLV-e (debita R$ 14,90 da carteira)."""
+    return await _crdd(CRDDClient().crlve_solicitar(**dados.model_dump()))
+
+@app.get("/crdd/crlve/{crlve_id}/documento", tags=["CRDD-RJ"])
+async def crdd_crlve_documento(crlve_id: int, token: str = Depends(get_current_user)):
+    """Link do PDF do CRLV-e emitido (válido por 10 minutos)."""
+    return await _crdd(CRDDClient().crlve_documento(crlve_id))
+
+@app.get("/crdd/crlve/{crlve_id}/pdf", tags=["CRDD-RJ"])
+async def crdd_crlve_pdf(crlve_id: int, placa: str = "", atualizar: bool = False, token: str = Depends(get_current_user)):
+    """PDF do CRLV-e emitido (do banco; na primeira vez baixa do CRDD, comprime e guarda)."""
+    return await _documento("crlve", crlve_id, lambda: CRDDClient().crlve_pdf(crlve_id), f"CRLVe_{placa or crlve_id}",
+                            placa=placa.upper() or None, atualizar=atualizar)
+
+@app.get("/crdd/comunicacao-venda", tags=["CRDD-RJ"])
+async def crdd_comunicacao_listar(placa: str = "", renavam: str = "", crv: str = "", cpf_cnpj_vendedor: str = "",
+                                  cpf_cnpj_comprador: str = "", data_venda: str = "",
+                                  data_comunicacao_ini: str = "", data_comunicacao_fim: str = "",
+                                  token: str = Depends(get_current_user)):
+    """Acompanhamento das comunicações de venda (protocolo, situação, se pode cancelar)."""
+    return await _crdd(CRDDClient().comunicacao_listar(
+        placa=placa.upper(), renavam=renavam, crv=crv, cpf_cnpj_vendedor=cpf_cnpj_vendedor,
+        cpf_cnpj_comprador=cpf_cnpj_comprador, data_venda=data_venda,
+        data_comunicacao_ini=data_comunicacao_ini, data_comunicacao_fim=data_comunicacao_fim))
+
+@app.post("/crdd/comunicacao-venda", tags=["CRDD-RJ"])
+async def crdd_comunicacao_comunicar(dados: CRDDComunicacao, token: str = Depends(get_current_user)):
+    """Cadastra e envia a comunicação de venda ao DETRAN-RJ (debita R$ 24,90 da carteira)."""
+    return await _crdd(CRDDClient().comunicacao_comunicar(dados.model_dump()))
+
+@app.get("/crdd/comunicacao-venda/{comunicacao_id}/comprovante", tags=["CRDD-RJ"])
+async def crdd_comunicacao_comprovante(comunicacao_id: int, placa: str = "", atualizar: bool = False,
+                                       token: str = Depends(get_current_user)):
+    """PDF do comprovante da comunicação de venda (do banco; na primeira vez baixa do CRDD, comprime e guarda)."""
+    return await _documento("comunicacao", comunicacao_id, lambda: CRDDClient().comunicacao_comprovante(comunicacao_id),
+                            f"comunicacao-venda-{placa or comunicacao_id}", placa=placa.upper() or None, atualizar=atualizar)
+
+@app.get("/crdd/comunicacao-venda/{comunicacao_id}/historico", tags=["CRDD-RJ"])
+async def crdd_comunicacao_historico(comunicacao_id: int, token: str = Depends(get_current_user)):
+    """Histórico da comunicação de venda (retornos do DETRAN)."""
+    return await _crdd(CRDDClient().comunicacao_historico(comunicacao_id))
+
+@app.post("/crdd/comunicacao-venda/{comunicacao_id}/cancelar", tags=["CRDD-RJ"])
+async def crdd_comunicacao_cancelar(comunicacao_id: int, dados: CRDDCancelarComunicacao,
+                                    token: str = Depends(get_current_user)):
+    """Cancela uma comunicação de venda no DETRAN-RJ."""
+    return await _crdd(CRDDClient().comunicacao_cancelar(comunicacao_id, dados.motivo, dados.observacoes,
+                                                         dados.codigo_seguranca_crv, dados.renavam))
+
+@app.get("/crdd/intencao-venda", tags=["CRDD-RJ"])
+async def crdd_intencao_listar(placa: str = "", cpf: str = "", situacao: str = "", page: int = 1,
+                               token: str = Depends(get_current_user)):
+    """Intenções de venda (ATPV-e): situação, erro, link do ATPV (atpve_url/atpvd_url) e ações possíveis."""
+    return await _crdd(CRDDClient().intencao_listar(placa, cpf, situacao, page))
+
+@app.post("/crdd/intencao-venda", tags=["CRDD-RJ"])
+async def crdd_intencao_cadastrar(dados: CRDDIntencao, token: str = Depends(get_current_user)):
+    """Cadastra a intenção de venda e emite a ATPV-e (debita R$ 26,90 da carteira)."""
+    return await _crdd(CRDDClient().intencao_cadastrar(dados.veiculo, dados.vendedor, dados.comprador, dados.uf))
+
+@app.get("/crdd/intencao-venda/{intencao_id}/pdf", tags=["CRDD-RJ"])
+async def crdd_intencao_pdf(intencao_id: int, atualizar: bool = False, token: str = Depends(get_current_user)):
+    """PDF da ATPV-e (do banco; na primeira vez baixa do CRDD, comprime e guarda)."""
+    info: dict = {}
+
+    async def baixar():
+        info.update(await CRDDClient().intencao_pdf(intencao_id))
+        return info["pdf"]
+
+    resposta = await _documento("atpve", intencao_id, baixar, f"ATPVe_{intencao_id}", atualizar=atualizar)
+    if info.get("placa"):
+        # Placa only becomes known after the download; record it for the documents listing
+        try:
+            documentos.db.client.table(documentos.TABELA).update({"placa": info["placa"]}) \
+                .eq("tipo", "atpve").eq("referencia", str(intencao_id)).execute()
+        except Exception:
+            pass
+    return resposta
+
+@app.get("/crdd/intencao-venda/{intencao_id}/historico", tags=["CRDD-RJ"])
+async def crdd_intencao_historico(intencao_id: int, page: int = 1, token: str = Depends(get_current_user)):
+    """Eventos de cada etapa da intenção de venda."""
+    return await _crdd(CRDDClient().intencao_historico(intencao_id, page))
+
+@app.post("/crdd/intencao-venda/{intencao_id}/atualizar", tags=["CRDD-RJ"])
+async def crdd_intencao_atualizar(intencao_id: int, token: str = Depends(get_current_user)):
+    """Pede ao CRDD para sincronizar a situação com o DETRAN."""
+    return await _crdd(CRDDClient().intencao_atualizar(intencao_id))
+
+@app.post("/crdd/intencao-venda/{intencao_id}/acao", tags=["CRDD-RJ"])
+async def crdd_intencao_acao(intencao_id: int, dados: CRDDIntencaoAcao, token: str = Depends(get_current_user)):
+    """cancelar (com DUDA quando exigida) ou recuperar_atpv (obter o ATPV disponível no DETRAN; pode cobrar)."""
+    return await _crdd(CRDDClient().intencao_acao(intencao_id, dados.acao, dados.duda))
 
 # --- ENDPOINT CONSOLIDADO ---
 
