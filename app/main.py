@@ -23,6 +23,7 @@ from app.security.encryption import encrypt_data, decrypt_data
 from app.scrapers.detran_rj import DetranRJScraper
 from app.scrapers.detran_pontuacao import DetranPontuacaoScraper
 from app.scrapers.wdapi import WDAPIClient
+from app.scrapers.apiplacas_v3 import APIPlacasV3Client, APIPlacasError
 from app.scrapers.sefaz_rj import SefazRJScraper
 from app.scrapers.sefaz import SefazDiscoveryScraper
 from app.scrapers.bradesco import BradescoScraper
@@ -194,6 +195,46 @@ async def query_api_placas(
     if result["status"] != "success":
         raise HTTPException(status_code=502, detail=result["message"])
     return result
+
+@app.get("/placas-v3/saldo", tags=["Consultas API Placas v3"])
+async def query_api_placas_v3_saldo(token: str = Depends(get_current_user)):
+    """Saldo da conta na API Placas v3, preços por consulta e consultas disponíveis (sem cobrança)."""
+    try:
+        data = await APIPlacasV3Client().saldo()
+    except APIPlacasError as e:
+        raise HTTPException(status_code=e.http_status, detail=e.message)
+    return {"source": "API Placas v3", "status": "success", "data": data}
+
+@app.get("/placas-v3/logs", tags=["Consultas API Placas v3"])
+async def query_api_placas_v3_logs(
+    limite: int = 100,
+    status: str | None = None,
+    token: str = Depends(get_current_user)
+):
+    """Histórico de requisições das últimas 48h na API Placas v3 (sem cobrança). status: sucesso ou erro."""
+    try:
+        data = await APIPlacasV3Client().logs(limite=limite, status=status)
+    except APIPlacasError as e:
+        raise HTTPException(status_code=e.http_status, detail=e.message)
+    return {"source": "API Placas v3", "status": "success", "data": data}
+
+@app.get("/placas-v3/{consulta}/{placa}", tags=["Consultas API Placas v3"])
+async def query_api_placas_v3(
+    consulta: str,
+    placa: str,
+    atualizar: bool = False,
+    token: str = Depends(get_current_user)
+):
+    """
+    Consulta na API Placas v3 (token WDAPI_TOKEN_NOVO). consulta:
+    basico, chassi, renavam, motor, fipe, basico-fipe, motor-chassi ou completa
+    (completa = basico + motor + chassi + renavam, cobrada uma vez só).
+    Cada consulta é cobrada, por isso fica em cache por 24h; atualizar=true força nova consulta.
+    """
+    try:
+        return await APIPlacasV3Client().consultar(consulta, placa, atualizar=atualizar)
+    except APIPlacasError as e:
+        raise HTTPException(status_code=e.http_status, detail=e.message)
 
 @app.get("/sefaz/{renavam}", tags=["Consultas IPVASefaz-RJ"])
 async def query_sefaz(
